@@ -1,0 +1,7 @@
+LavatiNoter is free and open source software (MIT license). It is a fast, local-first text and code editor: tabs, syntax colours, find and replace across files, a folder workspace, and a large file mode that opens multi-gigabyte logs instantly.
+
+You can paste a picture from the clipboard straight into a document: it is saved next to the file and shown inline.
+
+Everything stays on this computer and no account is needed. Nothing else has to be installed first.
+
+If LavatiNoter is already installed, this setup updates it and keeps your settings and unsaved work.

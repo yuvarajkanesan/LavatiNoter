@@ -1,0 +1,35 @@
+LAVATINOTER - END USER LICENSE AGREEMENT
+
+Please read this agreement before installing. By choosing "I accept the agreement" you agree to these terms.
+
+1. LICENSE
+LavatiNoter is free and open source software published by Lavati Softwares. You may use, copy, modify, merge,
+publish, distribute, sublicense and sell copies of it under the MIT License reproduced below.
+
+2. NO WARRANTY, LIMITATION OF LIABILITY
+The software is provided "as is", without warranty of any kind. LavatiNoter edits files you choose; Replace in Files
+changes files on disk and cannot be undone. You are responsible for keeping backups of anything important. To the
+maximum extent permitted by law, Lavati Softwares is not liable for any loss of data or any other damages arising
+from use of the software.
+
+3. PRIVACY
+LavatiNoter does not collect telemetry, makes no network connections and needs no account. Settings, the session
+backup (your open tabs and unsaved text) and pasted pictures of unsaved documents are stored on this computer only,
+in %APPDATA%\LavatiNoter.
+
+MIT License
+
+Copyright (c) 2026 Lavati Softwares
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit
+persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

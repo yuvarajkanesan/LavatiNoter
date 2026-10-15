@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/
+.venv/
+.idea/
+.vscode/
+installer/THIRD_PARTY_NOTICES.txt
+installer/generated/
+*.log
+.pytest_cache/
+.claude/
+Thumbs.db
