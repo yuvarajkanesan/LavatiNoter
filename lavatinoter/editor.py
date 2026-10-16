@@ -69,7 +69,7 @@ class CodeEditor(QPlainTextEdit):
         self._completer.setWidget(self)
         self._completer.setCompletionMode(QCompleter.PopupCompletion)
         self._completer.setCaseSensitivity(Qt.CaseInsensitive)
-        self._completer.setMaxVisibleItems(4)
+        self._completer.setMaxVisibleItems(3)
         self._completer.activated[str].connect(self._insert_completion)
         self._preview_rects = []            # [(QRect, link block)] of the pictures drawn in the last paint
         self._img_sel = None                # block number of the selected picture
@@ -926,7 +926,7 @@ class CodeEditor(QPlainTextEdit):
         self._word_cache = (rev, now, words)
         return words
 
-    def completion_candidates(self, prefix, limit=4):
+    def completion_candidates(self, prefix, limit=3):
         low = prefix.lower()
         out, seen = [], {prefix}
         docw = self._doc_words()
