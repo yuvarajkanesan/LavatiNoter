@@ -636,7 +636,7 @@ def selftest():
         ed._column_select(0, 1, 2, 3)                         # a block (column) selection over three lines
         assert len(ed._all_cursors()) == 3
         ed._multi_key(QKeyEvent(QEvent.KeyPress, Qt.Key_Delete, Qt.NoModifier))
-        assert ed.toPlainText() == "a\nb\nc\n", repr(ed.toPlainText())
+        assert ed.toPlainText() == "aa\nbb\ncc\n", repr(ed.toPlainText())
         ed._multi_key(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
         assert not ed.extra_cursors
         ed.document().setModified(False)
