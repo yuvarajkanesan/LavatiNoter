@@ -34,5 +34,5 @@ jobs:
         with:
           files: |
             dist/LavatiNoter-Setup.exe
-            dist/LavatiNoter-portable.zip
+            dist/LavatiNoter-Portable.exe
             dist/SHA256SUMS.txt

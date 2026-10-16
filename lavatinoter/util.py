@@ -15,8 +15,9 @@ def data_dir():
     base = os.environ.get("LAVATINOTER_HOME")
     if not base:
         exe_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if os.path.isfile(os.path.join(exe_dir, "portable.txt")):          # portable build: everything stays next to the program
-            base = os.path.join(exe_dir, "data")
+        exe_name = os.path.basename(sys.executable).lower() if getattr(sys, "frozen", False) else ""
+        if "portable" in exe_name or os.path.isfile(os.path.join(exe_dir, "portable.txt")):
+            base = os.path.join(exe_dir, "LavatiNoterData")                 # portable: everything stays next to the program
         else:
             base = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), APP_NAME)
     os.makedirs(base, exist_ok=True)

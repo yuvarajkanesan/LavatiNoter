@@ -2,7 +2,7 @@
 
 1. Bump `VERSION` in `lavatinoter/__init__.py`, add the changes to `CHANGELOG.md`, commit.
 2. `build.bat` builds `dist\LavatiNoter\LavatiNoter.exe`, runs the packaged self-test and compiles `dist\LavatiNoter-Setup.exe`
-   (needs Inno Setup 6). `make_portable.bat` then makes `dist\LavatiNoter-portable.zip` and `dist\SHA256SUMS.txt`.
+   (needs Inno Setup 6). `make_portable.bat` builds the single-file `dist\LavatiNoter-Portable.exe` (self-tested) and writes `dist\SHA256SUMS.txt`.
 3. **Sign** `LavatiNoter.exe` and the installer (OV/EV certificate or Azure Trusted Signing): set `LAVATI_SIGNTOOL` to a command using
    `$f` for the file before running `build.bat`. Unsigned builds show "Unknown publisher" and SmartScreen warns.
 4. **Test on clean machines** (Windows 10 and 11, no Python): install, open files, upgrade over the previous version, uninstall with and

@@ -841,6 +841,8 @@ def selftest():
         import importlib
         from lavatinoter import util as u
         assert os.path.isdir(u.data_dir())
+        import ssl
+        ssl.create_default_context()                                       # the update check needs TLS in the packaged app
 
     def t_lsp():
         from lavatinoter import lsp
@@ -931,6 +933,11 @@ def main(argv):
         return 0
     if "--selftest" in args:
         return selftest()
+    if "--data-dir-to" in args:                  # used by make_portable.bat to check where a portable build keeps its data
+        from lavatinoter import util
+        with open(args[args.index("--data-dir-to") + 1], "w", encoding="utf-8") as f:
+            f.write(util.data_dir())
+        return 0
     paths = [os.path.abspath(a) for a in args if not a.startswith("--")]
     new_instance = "--new-instance" in args
 
