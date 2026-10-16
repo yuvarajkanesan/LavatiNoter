@@ -91,6 +91,8 @@ DEFAULTS = {
     "spellcheck": True,
     "autocorrect": True,
     "autocomplete": True,
+    "autoclose": True,
+    "indent_guides": True,
 }
 
 

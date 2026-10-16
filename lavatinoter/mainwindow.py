@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBo
                                QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
                                QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget, QComboBox, QLineEdit)
 
-from . import APP_NAME, VERSION, session, theme, util
+from . import APP_NAME, VERSION, formatter, session, theme, util
 from .editor import CodeEditor
 from .finddialog import FindDialog
 from .highlighter import LANGS, PLAIN, lang_by_name, lang_for_path
@@ -245,6 +245,14 @@ class MainWindow(QMainWindow):
         self.a_underline = A("Underline", lambda: self._format("underline"), "Ctrl+U", "underline", tip="Underline (Ctrl+U)")
         self.a_size_up = A("Increase Text Size", lambda: self._size(delta=2), "Ctrl+Alt+Up", "textup", tip="Larger text (Ctrl+Alt+Up)")
         self.a_size_down = A("Decrease Text Size", lambda: self._size(delta=-2), "Ctrl+Alt+Down", "textdown", tip="Smaller text (Ctrl+Alt+Down)")
+        self.a_format_doc = A("Format Document", self.format_document, "Shift+Alt+F", None,
+                              tip="Pretty-prints JSON, XML, HTML, CSS and SQL; re-indents JavaScript, TypeScript, Java, C#, C/C++, Go, Rust, PHP and more")
+        self.a_minify = A("Minify JSON", self.minify_json)
+        self.a_validate = A("Check Syntax", self.validate_document, "F7", None,
+                            tip="Finds the first error in JSON, XML, Python or unbalanced brackets in other code")
+        self.a_select_in = A("Select Inside Brackets", lambda: self._ed_call("select_enclosing"), "Ctrl+Alt+B")
+        self.a_autoclose = A("Auto-close Brackets and Quotes", self.set_autoclose, None, None, True, self.settings["autoclose"])
+        self.view_guides = A("Indent Guides", self.set_guides, None, None, True, self.settings["indent_guides"])
         self.a_find = A("Find...", lambda: self.find_dialog.show_tab(0, self._selected_text()), S.Find, "find", tip="Find (Ctrl+F)")
         self.a_replace = A("Replace...", lambda: self.find_dialog.show_tab(1, self._selected_text()), "Ctrl+H", "replace", tip="Replace (Ctrl+H)")
         self.a_find_files = A("Find in Files...", lambda: self.find_dialog.show_tab(2, self._selected_text()), "Ctrl+Shift+F")
@@ -330,6 +338,10 @@ class MainWindow(QMainWindow):
         m = mb.addMenu("Format")
         for a in (self.a_bold, self.a_italic, self.a_underline, None, self.a_size_up, self.a_size_down):
             m.addSeparator() if a is None else m.addAction(a)
+        m.addSeparator()
+        m.addAction(self.a_format_doc)
+        m.addAction(self.a_minify)
+        m.addAction(self.a_validate)
         sz = m.addMenu("Text Size")
         for px in (10, 12, 14, 18, 24, 32, 48):
             sz.addAction(f"{px} px", lambda _=False, v=px: self._size(px=v))
@@ -340,11 +352,11 @@ class MainWindow(QMainWindow):
 
         m = mb.addMenu("Search")
         for a in (self.a_find, self.a_find_next, self.a_find_prev, self.a_replace, self.a_find_files, self.a_mark, None,
-                  self.a_goto, self.a_bracket):
+                  self.a_goto, self.a_bracket, self.a_select_in):
             m.addSeparator() if a is None else m.addAction(a)
 
         m = mb.addMenu("View")
-        for a in (self.view_wrap, self.view_ws, self.view_marks, None, self.show_workspace, self.view_map, self.view_results, None,
+        for a in (self.view_wrap, self.view_ws, self.view_guides, self.view_marks, None, self.show_workspace, self.view_map, self.view_results, None,
                   self.a_zoom_in, self.a_zoom_out, self.a_zoom_reset, None, self.a_full):
             m.addSeparator() if a is None else m.addAction(a)
 
@@ -377,6 +389,7 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_spell)
         m.addAction(self.a_autocorrect)
         m.addAction(self.a_complete)
+        m.addAction(self.a_autoclose)
         th = m.addMenu("Theme")
         self.theme_group = QActionGroup(self)
         for name in theme.THEME_CHOICES:
@@ -539,6 +552,8 @@ class MainWindow(QMainWindow):
         ed.set_show_whitespace(self.settings["show_whitespace"])
         ed.set_spellcheck(self.settings["spellcheck"], self.settings["autocorrect"])
         ed.autocomplete_on = self.settings["autocomplete"]
+        ed.autoclose_on = self.settings["autoclose"]
+        ed.show_guides = self.settings["indent_guides"]
         ed.zoomRequested.connect(self.zoom)
         ed.filesDropped.connect(self.open_paths)
         ed.cursorStatus.connect(self._update_status)
@@ -1090,6 +1105,69 @@ class MainWindow(QMainWindow):
                                 "so the file stays plain text. The editor hides the marks and just shows the formatting (View > Show Formatting Marks reveals them):\n\n  **bold**   *italic*   <u>underline</u>\n  <span style=\"font-size:24px\">size</span>"
                                 "\n\nThe editor shows them formatted and dims the marks; Markdown viewers and browsers render the same.\n"
                                 "In HTML documents <b>, <i> and <u> are used. Code files are left alone.")
+
+    def set_autoclose(self, on=None):
+        self.settings["autoclose"] = self.a_autoclose.isChecked()
+        for p in self.all_tabs():
+            self.editor_of(p).autoclose_on = self.settings["autoclose"] and not p.is_large
+        self.settings.save()
+
+    def set_guides(self, on=None):
+        self.settings["indent_guides"] = self.view_guides.isChecked()
+        for p in self.all_tabs():
+            self.editor_of(p).show_guides = self.settings["indent_guides"]
+            self.editor_of(p).viewport().update()
+        self.settings.save()
+
+    def _problem(self, ed, err, what):
+        msg = f"{err}" + (f" (line {err.line}, column {err.col})" if err.line else "")
+        self.flash(msg)
+        self.results.log(f"{what}: {msg}")
+        if err.line:
+            ed.goto_line(err.line, max(0, (err.col or 1) - 1))
+            ed.setFocus()
+
+    def format_document(self):
+        page = self.current()
+        ed = self.editor_of(page)
+        if ed is None or page.is_large or ed.isReadOnly():
+            self.flash("Open a normal (editable) document to format it.")
+            return
+        name = ed.lang.name
+        if not formatter.can_format(name):
+            self.flash(f"No formatter for {name} documents yet.")
+            return
+        try:
+            new = formatter.format_text(name, ed.toPlainText(), self.settings["tab_width"], not self.settings["use_spaces"])
+        except formatter.FormatError as e:
+            self._problem(ed, e, "Format")
+            return
+        if new == ed.toPlainText():
+            self.flash("Already formatted")
+            return
+        ed.replace_document_text(new)
+        self.flash(f"Formatted as {name}")
+
+    def minify_json(self):
+        ed = self.editor_of(self.current())
+        if ed is None or ed.isReadOnly() or ed.lang.name != "JSON":
+            self.flash("Minify works on JSON documents.")
+            return
+        try:
+            ed.replace_document_text(formatter.minify_json(ed.toPlainText()))
+        except formatter.FormatError as e:
+            self._problem(ed, e, "Minify")
+
+    def validate_document(self):
+        ed = self.editor_of(self.current())
+        if ed is None or self.current().is_large:
+            return
+        try:
+            formatter.validate_text(ed.lang.name, ed.toPlainText())
+        except formatter.FormatError as e:
+            self._problem(ed, e, "Check")
+            return
+        self.flash(f"No problems found in this {ed.lang.name} document")
 
     def set_complete(self, on=None):
         self.settings["autocomplete"] = self.a_complete.isChecked()

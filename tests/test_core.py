@@ -50,3 +50,30 @@ class FileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FormatterTests(unittest.TestCase):
+    def test_json_roundtrip_and_error_position(self):
+        from lavatinoter import formatter as f
+        self.assertEqual(f.format_json('{"a":[1,2]}', 2), '{\n  "a": [\n    1,\n    2\n  ]\n}\n')
+        self.assertEqual(f.minify_json('{\n "a": 1\n}'), '{"a":1}\n')
+        with self.assertRaises(f.FormatError) as cm:
+            f.format_json('{"a": 1,}')
+        self.assertEqual(cm.exception.line, 1)
+
+    def test_brace_reindent_keeps_tokens(self):
+        from lavatinoter import formatter as f
+        src = "if (a) {\nb();\n}\n"
+        out = f.reindent_braces(src)
+        self.assertEqual(out.split(), src.split())
+        self.assertEqual(out, "if (a) {\n    b();\n}\n")
+
+    def test_bracket_check_ignores_strings_and_comments(self):
+        from lavatinoter import formatter as f
+        self.assertIsNone(f.check_brackets('x = "(" // )\n{ [ ] }'))
+        self.assertEqual(f.check_brackets("a(b]")[0], "Unmatched ']'")
+
+    def test_css_and_sql(self):
+        from lavatinoter import formatter as f
+        self.assertEqual(f.format_css("a{color:red}"), "a {\n    color: red;\n}\n")
+        self.assertIn("\nFROM t", f.format_sql("select a from t"))

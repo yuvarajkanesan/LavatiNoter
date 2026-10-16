@@ -64,6 +64,8 @@ class CodeEditor(QPlainTextEdit):
         self.marks = []                     # [(start, length)] highlighted by the Mark tab
         self._pix_cache = {}
         self.autocomplete_on = False
+        self.autoclose_on = False
+        self.show_guides = True
         self._word_cache = (None, 0.0, None)
         self._completer = QCompleter(QStringListModel([], self), self)
         self._completer.setWidget(self)
@@ -345,6 +347,21 @@ class CodeEditor(QPlainTextEdit):
                     s.cursor.setPosition(q + 1, QTextCursor.KeepAnchor)
                     out.append(s)
                 return out
+        i = self._enclosing_bracket() if self.is_code() else None          # caret is inside a pair: light up both ends
+        if i is not None:
+            j = self._match_bracket(i, doc.characterAt(i))
+            if j is not None:
+                fmt = QTextCharFormat()
+                fmt.setBackground(QColor(theme.c("SMART_BG")))
+                out = []
+                for q in (i, j):
+                    s = QTextEdit.ExtraSelection()
+                    s.format = fmt
+                    s.cursor = QTextCursor(doc)
+                    s.cursor.setPosition(q)
+                    s.cursor.setPosition(q + 1, QTextCursor.KeepAnchor)
+                    out.append(s)
+                return out
         return []
 
     def _match_bracket(self, p, ch):
@@ -503,6 +520,11 @@ class CodeEditor(QPlainTextEdit):
         if key == Qt.Key_Backspace and self._ac is not None and not mods:
             if self._undo_autocorrect():
                 return
+        if key == Qt.Key_Backspace and not mods and self._try_autoclose_backspace():
+            return
+        if e.text() and self._try_autoclose(e):
+            self._ac = None
+            return
         elif key not in (Qt.Key_Shift, Qt.Key_Control, Qt.Key_Alt):
             ch = e.text()
             if ch and len(ch) == 1 and ch in self.AC_DELIMS and not mods & (Qt.ControlModifier | Qt.AltModifier):
@@ -533,6 +555,14 @@ class CodeEditor(QPlainTextEdit):
             text = cur.block().text()
             before = text[:cur.positionInBlock()]
             indent = re.match(r"[ \t]*", text).group()
+            after = text[cur.positionInBlock():]
+            if self.is_code() and before.rstrip().endswith(("{", "(", "[")) and after[:1] in ("}", ")", "]") and before.rstrip()[-1:] + after[:1] in ("{}", "()", "[]"):
+                cur.insertText("\n" + indent + self._indent_unit() + "\n" + indent)       # Enter between {} opens a block
+                cur.movePosition(QTextCursor.Up)
+                cur.movePosition(QTextCursor.EndOfBlock)
+                self.setTextCursor(cur)
+                self.ensureCursorVisible()
+                return
             if before.rstrip().endswith((":", "{", "(", "[")) and len(before.strip()) > 0:
                 indent += self._indent_unit()
             cur.insertText("\n" + indent)
@@ -980,6 +1010,153 @@ class CodeEditor(QPlainTextEdit):
         rect.setWidth(max(160, popup.sizeHintForColumn(0) + popup.verticalScrollBar().sizeHint().width() + 24))
         self._completer.complete(rect)
 
+    # ---- IDE helpers: enclosing brackets, auto-close, indent guides ---------------------------------------------------
+    CODE_NO = ("Plain text", "Markdown", "Log", "Diff / Patch")
+    PAIRS = {"(": ")", "[": "]", "{": "}", '"': '"', "'": "'", "`": "`"}
+
+    def is_code(self):
+        return self.lang.name not in self.CODE_NO
+
+    def _enclosing_bracket(self, pos=None):
+        """Index of the nearest unclosed opening bracket before the caret (None when there is none)."""
+        doc = self.document()
+        pos = self.textCursor().position() if pos is None else pos
+        need = {")": 0, "]": 0, "}": 0}
+        i = pos - 1
+        stop = max(-1, pos - 60000)
+        while i > stop:
+            ch = doc.characterAt(i)
+            if ch in need:
+                need[ch] += 1
+            elif ch in BRACKETS:
+                closer = BRACKETS[ch]
+                if need[closer] > 0:
+                    need[closer] -= 1
+                else:
+                    return i
+            i -= 1
+        return None
+
+    def select_enclosing(self):
+        """Selects what is inside the nearest pair of brackets; again, and it grows to the next pair out."""
+        cur = self.textCursor()
+        start, end = cur.selectionStart(), cur.selectionEnd()
+        pos = start
+        while True:
+            i = self._enclosing_bracket(pos)
+            if i is None:
+                return False
+            j = self._match_bracket(i, self.document().characterAt(i))
+            if j is None:
+                pos = i
+                continue
+            if i + 1 < start or j > end or (i + 1 == start and j == end and cur.hasSelection()):
+                if i + 1 == start and j == end:
+                    pos = i
+                    continue
+                self.select_range(i + 1, j - i - 1)
+                return True
+            pos = i
+
+    def _try_autoclose(self, e):
+        """Typing ( [ { quotes inserts the closing one too, typing a closer steps over it. -> True when handled."""
+        ch = e.text()
+        if len(ch) != 1 or e.modifiers() & (Qt.ControlModifier | Qt.AltModifier) or not self.autoclose_on or not self.is_code():
+            return False
+        cur = self.textCursor()
+        text = cur.block().text()
+        col = cur.positionInBlock()
+        nxt = text[col:col + 1]
+        prev = text[col - 1:col] if col else ""
+        if cur.hasSelection():
+            if ch in self.PAIRS and ch not in "'`" or ch in "\"'`":
+                sel = cur.selectedText().replace("\u2029", "\n")
+                s = cur.selectionStart()
+                cur.insertText(ch + sel + self.PAIRS[ch])
+                c = QTextCursor(self.document())
+                c.setPosition(s + 1)
+                c.setPosition(s + 1 + len(sel), QTextCursor.KeepAnchor)
+                self.setTextCursor(c)
+                return True
+            return False
+        if ch in ")]}" and nxt == ch:
+            cur.movePosition(QTextCursor.Right)
+            self.setTextCursor(cur)
+            return True
+        if ch in "\"'`":
+            if nxt == ch:
+                cur.movePosition(QTextCursor.Right)
+                self.setTextCursor(cur)
+                return True
+            if prev.isalnum() or prev in "_\\" or nxt.isalnum() or (ch == "'" and self.lang.name in ("Rust", "Lua")):
+                return False
+        elif ch not in "([{":
+            return False
+        elif nxt and not (nxt.isspace() or nxt in ")]}>,;:."):
+            return False
+        cur.beginEditBlock()
+        cur.insertText(ch + self.PAIRS[ch])
+        cur.movePosition(QTextCursor.Left)
+        cur.endEditBlock()
+        self.setTextCursor(cur)
+        return True
+
+    def _try_autoclose_backspace(self):
+        if not self.autoclose_on or not self.is_code():
+            return False
+        cur = self.textCursor()
+        if cur.hasSelection():
+            return False
+        text, col = cur.block().text(), cur.positionInBlock()
+        if 0 < col < len(text) and text[col - 1] in self.PAIRS and text[col] == self.PAIRS[text[col - 1]]:
+            cur.beginEditBlock()
+            cur.deletePreviousChar()
+            cur.deleteChar()
+            cur.endEditBlock()
+            self.setTextCursor(cur)
+            return True
+        return False
+
+    def _paint_indent_guides(self):
+        if not self.show_guides or not self.is_code() or self.read_only_window:
+            return
+        p = QPainter(self.viewport())
+        col = QColor(theme.c("BORDER2"))
+        col.setAlpha(110)
+        p.setPen(QPen(col, 1))
+        cw = QFontMetricsF(self.font()).horizontalAdvance(" ")
+        x0 = self.contentOffset().x() + self.document().documentMargin()
+        block = self.firstVisibleBlock()
+        bottom = self.viewport().height()
+        tw = max(1, self.tab_width)
+        last_levels = 0
+        while block.isValid():
+            geo = self.blockBoundingGeometry(block).translated(self.contentOffset())
+            if geo.top() > bottom:
+                break
+            text = block.text()
+            if text.strip():
+                width = len(text.expandtabs(tw)) - len(text.expandtabs(tw).lstrip())
+                last_levels = width // tw
+            levels = last_levels if not text.strip() else width // tw       # blank lines carry the guides on
+            for j in range(levels):
+                x = int(x0 + j * tw * cw)
+                p.drawLine(x, int(geo.top()), x, int(geo.bottom()))
+            block = block.next()
+        p.end()
+
+    def replace_document_text(self, new):
+        """Replaces the whole text as one undo step, keeping the caret near its line."""
+        cur = self.textCursor()
+        line, col = cur.blockNumber(), cur.positionInBlock()
+        bar = self.verticalScrollBar().value()
+        cur.beginEditBlock()
+        cur.select(QTextCursor.Document)
+        cur.insertText(new)
+        cur.endEditBlock()
+        self.goto_line(line + 1, col)
+        self.verticalScrollBar().setValue(bar)
+
     def toggle_comment(self):
         prefix = self.lang.comment
         if not prefix:
@@ -1185,6 +1362,7 @@ class CodeEditor(QPlainTextEdit):
 
     def paintEvent(self, e):
         super().paintEvent(e)
+        self._paint_indent_guides()
         previews = self._visible_previews()
         self._preview_rects = []
         if not previews:

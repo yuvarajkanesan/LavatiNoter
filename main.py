@@ -46,8 +46,8 @@ def selftest():
             say(f"FAIL  {name}: {type(e).__name__}: {e}")
             say(traceback.format_exc())
 
-    from PySide6.QtCore import QMimeData, QTimer
-    from PySide6.QtGui import QColor, QGuiApplication, QImage, QTextCursor
+    from PySide6.QtCore import QEvent, QMimeData, QTimer, Qt
+    from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeyEvent, QTextCursor
     from PySide6.QtWidgets import QApplication
     from lavatinoter import search, theme, util
     from lavatinoter.mainwindow import MainWindow
@@ -269,8 +269,6 @@ def selftest():
 
     def keys(ed, text):
         """Types text key by key through the editor's real key handler (no QtTest needed)."""
-        from PySide6.QtCore import QEvent, Qt
-        from PySide6.QtGui import QKeyEvent
         for ch in text:
             key = Qt.Key_Space if ch == " " else Qt.Key_Backspace if ch == "\b" else ord(ch.upper())
             for kind in (QEvent.KeyPress, QEvent.KeyRelease):
@@ -400,6 +398,59 @@ def selftest():
         assert "beautiful" in ed.completion_candidates("beaut")
         ed.document().setModified(False)
 
+    def t_ide():
+        from lavatinoter import formatter
+        from lavatinoter.highlighter import JS, JSON, PYTHON, lang_for_path
+        # formatting
+        ed = win.new_file('{"b":[1,2,{"c":null}],"a":"x"}')
+        ed.set_language(JSON)
+        win.format_document()
+        assert ed.toPlainText().startswith('{\n    "b": [\n        1,'), ed.toPlainText()
+        ed.undo()
+        assert ed.toPlainText() == '{"b":[1,2,{"c":null}],"a":"x"}', "format must be one undo step"
+        win.minify_json()
+        assert ed.toPlainText() == '{"b":[1,2,{"c":null}],"a":"x"}\n'
+        ed.setPlainText('{"a": 1,}')
+        win.validate_document()
+        assert ed.textCursor().blockNumber() == 0 and "JSON" in win.results.console.toPlainText()
+        js = win.new_file("function f(a){\nif(a){\nreturn [1,\n2];\n}\n}\n")
+        js.set_language(JS)
+        win.format_document()
+        assert js.toPlainText() == "function f(a){\n    if(a){\n        return [1,\n            2];\n    }\n}\n", repr(js.toPlainText())
+        # language coverage
+        for name, lang in (("a.ts", "TypeScript"), ("a.java", "Java"), ("a.rs", "Rust"), ("a.go", "Go"), ("a.cs", "C#"),
+                           ("a.cpp", "C / C++"), ("a.php", "PHP"), ("a.rb", "Ruby"), ("a.kt", "Kotlin"), ("a.swift", "Swift"),
+                           ("Dockerfile", "Dockerfile"), ("Makefile", "Makefile"), ("a.lua", "Lua"), ("a.diff", "Diff / Patch")):
+            assert lang_for_path(name).name == lang, (name, lang_for_path(name).name)
+        # auto-close brackets and quotes, and Enter between braces
+        py = win.new_file("")
+        py.set_language(PYTHON)
+        py.autoclose_on = True
+        keys(py, "print(")
+        assert py.toPlainText() == "print()", py.toPlainText()
+        keys(py, "'hi'")
+        assert py.toPlainText() == "print('hi')", py.toPlainText()
+        keys(py, ")")                                                              # typing the closer steps over it
+        assert py.toPlainText() == "print('hi')" and py.textCursor().position() == len("print('hi')")
+        py.setPlainText("")
+        keys(py, "x = [")
+        keys(py, "\b")                                                             # Backspace removes the empty pair
+        assert py.toPlainText() == "x = ", repr(py.toPlainText())
+        py.setPlainText("")
+        keys(py, "{")
+        QApplication.sendEvent(py, QKeyEvent(QEvent.KeyPress, Qt.Key_Return, Qt.NoModifier, "\r"))
+        assert py.toPlainText() == "{\n    \n}", repr(py.toPlainText())
+        # brackets: the pair around the caret is found, and "select inside" works
+        py.setPlainText("foo(a, [b, c], d)")
+        c = py.textCursor()
+        c.setPosition(10)
+        py.setTextCursor(c)
+        assert py._enclosing_bracket() == 7
+        assert py.select_enclosing() and py.textCursor().selectedText() == "b, c"
+        assert py.select_enclosing() and py.textCursor().selectedText() == "a, [b, c], d"
+        for p in (ed, js, py):
+            p.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -409,7 +460,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

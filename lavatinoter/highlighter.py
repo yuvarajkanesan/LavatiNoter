@@ -77,7 +77,7 @@ PYTHON = Lang("Python", [".py", ".pyw", ".pyi"], [], [
 ], [(r'(?i:[rbuf]{0,2})"""', r'"""', "string"), (r"(?i:[rbuf]{0,2})'''", r"'''", "string")],
     comment="#", funcs=r"^[ \t]*(?:async\s+)?(?:def|class)\s+(\w+)")
 
-JS = Lang("JavaScript", [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".json5"], [], [
+JS = Lang("JavaScript", [".js", ".jsx", ".mjs", ".cjs", ".json5"], [], [
     (r"//[^\n]*", "comment"), (STR_DQ, "string"), (STR_SQ, "string"), (r"`(?:[^`\\]|\\.)*`?", "string"),
     (r"/(?![/*])(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[gimsuy]*(?=\s*[,;)\n.])", "string"),
     (r"\b(?:function|class|interface|type|enum)\s+(\w+)", "keyword_func"),
@@ -170,11 +170,138 @@ LOG = Lang("Log", [".log", ".out", ".err"], [], [
 
 PLAIN = Lang("Plain text", [".txt", ".text", ".nfo", ".csv", ".tsv"])
 
-LANGS = [PLAIN, PYTHON, JS, JSON, HTML, CSS, CLIKE, YAML, TOML, MARKDOWN, SQL, BATCH, POWERSHELL, LOG]
+def _clike(name, exts, kw, types="", funcs=None, names=(), extra=(), hash_comment=False, multi=None):
+    """A brace language: // and /* */ comments, "strings", numbers, keywords, types and calls."""
+    rules = [((r"#[^\n]*" if hash_comment else r"//[^\n]*"), "comment")] + list(extra) + [
+        (STR_DQ, "string"), (r"'(?:[^'\\\n]|\\.){1,4}'?", "string"),
+        (r"\b(?:fn|func|fun|def|function|struct|class|interface|trait|enum|object|protocol|impl)\s+(\w+)", "keyword_func"),
+        (words(kw), "keyword"), (LITERALS, "literal")]
+    if types:
+        rules.append((words(types), "type"))
+    rules += [(NUM, "number"), (r"\b[A-Za-z_]\w*(?=\s*\()", "func")]
+    return Lang(name, exts, names, rules, multi if multi is not None else [(r"/\*", r"\*/", "comment")],
+                comment="#" if hash_comment else "//", funcs=funcs)
+
+
+JAVA_FUNCS = (r"^[ \t]*(?:(?:public|private|protected|static|final|abstract|synchronized|native|override|async|internal|virtual|sealed)\s+)*"
+              r"[\w<>\[\],.?]+\s+(\w+)\s*\([^;{)]*\)?\s*(?:throws\s+[\w, .]+)?\s*(?:\{|$)")
+
+TYPESCRIPT = Lang("TypeScript", [".ts", ".tsx", ".mts", ".cts"], [], JS.rules, JS.multi, comment="//", funcs=JS.funcs.pattern)
+JAVA = _clike("Java", [".java"],
+              "abstract assert break case catch class const continue default do else enum extends final finally for goto if implements "
+              "import instanceof interface native new package private protected public return static strictfp super switch synchronized "
+              "this throw throws transient try volatile while var record sealed permits yield",
+              "int long short char float double void boolean byte String Object List Map Set Integer Long Double Boolean",
+              JAVA_FUNCS, extra=[(r"@\w+", "decorator")])
+CSHARP = _clike("C#", [".cs", ".csx"],
+                "abstract as base break case catch checked class const continue default delegate do else enum event explicit extern "
+                "finally fixed for foreach goto if implicit in interface internal is lock namespace new operator out override params "
+                "private protected public readonly ref return sealed sizeof stackalloc static struct switch this throw try typeof "
+                "unchecked unsafe using virtual volatile while async await var record init get set yield where partial",
+                "int long short char float double decimal bool byte sbyte uint ulong ushort string object void dynamic Task List Dictionary",
+                JAVA_FUNCS, extra=[(r'@"(?:[^"]|"")*"', "string"), (r"^\s*#\s*\w+", "decorator"), (r"\[\w+(?:\([^)]*\))?\]", "decorator")])
+CPP = _clike("C / C++", [".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".ino"],
+             "auto break case catch class const constexpr continue default delete do else enum explicit extern final for friend goto if "
+             "inline namespace new noexcept nullptr operator override private protected public register return sizeof static struct "
+             "switch template this throw try typedef typename union using virtual volatile while concept requires co_await co_return",
+             "int long short char float double void bool signed unsigned size_t wchar_t uint8_t uint16_t uint32_t uint64_t int8_t "
+             "int16_t int32_t int64_t string vector map set",
+             r"^[ \t]*(?:(?:static|inline|virtual|extern|const|constexpr)\s+)*[\w:<>,*&\s]+?[\s*&]+(\w+)\s*\([^;{)]*\)?\s*(?:const\s*)?(?:\{|$)",
+             extra=[(r"^\s*#\s*\w+", "decorator"), (r"<[\w./]+\.h>|<\w+>", "string")])
+GO = _clike("Go", [".go"],
+            "break case chan const continue default defer else fallthrough for func go goto if import interface map package range "
+            "return select struct switch type var",
+            "int int8 int16 int32 int64 uint uint8 uint16 uint32 uint64 uintptr float32 float64 complex64 complex128 string bool byte "
+            "rune error any",
+            r"^func\s+(?:\([^)]*\)\s*)?(\w+)", extra=[(r"`[^`]*`", "string")], multi=[(r"/\*", r"\*/", "comment"), (r"`", r"`", "string")])
+RUST = _clike("Rust", [".rs"],
+              "as async await break const continue crate dyn else enum extern fn for if impl in let loop match mod move mut pub ref "
+              "return self static struct super trait type unsafe use where while macro_rules union",
+              "i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 bool char str String Vec Option Result Box Self",
+              r"^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:fn|struct|enum|trait|impl|mod)\s+(\w+)",
+              extra=[(r"#!?\[[^\]]*\]", "decorator"), (r"'[a-z_]\w*(?!')", "attr"), (r"\b\w+!", "func")])
+KOTLIN = _clike("Kotlin", [".kt", ".kts"],
+                "abstract annotation as break by catch class companion const constructor continue crossinline data do else enum "
+                "expect external final finally for fun get if import in infix init inline inner interface internal is lateinit noinline "
+                "object open operator out override package private protected public reified return sealed set super suspend this throw "
+                "try typealias val var vararg when where while",
+                "Int Long Short Byte Float Double Boolean Char String Unit Any Nothing List Map Set Array",
+                r"^[ \t]*(?:(?:public|private|protected|internal|override|open|suspend|inline|operator|abstract)\s+)*fun\s+(?:<[^>]*>\s*)?(?:[\w.]+\.)?(\w+)",
+                extra=[(r"@\w+", "decorator")])
+SWIFT = _clike("Swift", [".swift"],
+               "actor associatedtype async await break case catch class continue default defer deinit do else enum extension fallthrough "
+               "fileprivate final for func get guard if import in indirect init inout internal is lazy let mutating nonmutating open "
+               "operator override private protocol public repeat required rethrows return self Self set some static struct subscript "
+               "super switch throw throws try typealias var weak where while",
+               "Int Int8 Int16 Int32 Int64 UInt Float Double Bool String Character Array Dictionary Set Optional Any AnyObject Void",
+               r"^[ \t]*(?:(?:public|private|fileprivate|internal|open|static|final|override|mutating|class)\s+)*func\s+(\w+)",
+               extra=[(r"@\w+", "decorator")])
+DART = _clike("Dart", [".dart"],
+              "abstract as assert async await break case catch class const continue covariant default deferred do dynamic else enum "
+              "export extends extension external factory final finally for get hide if implements import in interface is late library "
+              "mixin new on operator part required rethrow return set show static super switch sync this throw try typedef var while with yield",
+              "int double num bool String List Map Set void Future Stream Object", JAVA_FUNCS, extra=[(r"@\w+", "decorator")])
+SCALA = _clike("Scala", [".scala", ".sbt", ".sc"],
+               "abstract case catch class def do else extends false final finally for forSome if implicit import lazy match new null "
+               "object override package private protected return sealed super this throw trait try true type val var while with yield given using enum",
+               "Int Long Short Byte Float Double Boolean Char String Unit Any AnyRef Nothing List Map Set Option Seq",
+               r"^[ \t]*(?:(?:override|private|protected|final|implicit|lazy)\s+)*(?:def|class|object|trait)\s+(\w+)", extra=[(r"@\w+", "decorator")])
+PHP = _clike("PHP", [".php", ".phtml", ".php5", ".inc"],
+             "abstract and as break callable case catch class clone const continue declare default do echo else elseif empty enddeclare "
+             "endfor endforeach endif endswitch endwhile enum extends final finally fn for foreach function global goto if implements "
+             "include include_once instanceof insteadof interface isset list match namespace new or print private protected public readonly "
+             "require require_once return static switch throw trait try unset use var while xor yield",
+             "int float string bool array object callable iterable mixed void never",
+             r"^[ \t]*(?:(?:public|private|protected|static|final|abstract)\s+)*function\s+&?(\w+)|^\s*(?:abstract\s+|final\s+)?class\s+(\w+)",
+             extra=[(r"<\?php|<\?=|\?>", "decorator"), (r"\$\w+", "literal"), (r"#(?!\[)[^\n]*", "comment")])
+GROOVY = _clike("Groovy / Gradle", [".groovy", ".gradle", ".gvy"],
+                "abstract as assert break case catch class continue def default do else enum extends final finally for if implements import "
+                "in instanceof interface new package private protected public return static super switch this throw throws trait try while",
+                "int long short char float double void boolean byte String Object List Map", JAVA_FUNCS, extra=[(r"@\w+", "decorator")])
+
+RUBY = Lang("Ruby", [".rb", ".rake", ".gemspec", ".ru", ".erb"], ["rakefile", "gemfile", "guardfile"], [
+    (r"#[^\n]*", "comment"), (STR_DQ, "string"), (STR_SQ, "string"), (r":[A-Za-z_]\w*[?!]?", "literal"), (r"@@?\w+", "attr"),
+    (r"\b(?:def|class|module)\s+(?:self\.)?(\w+)", "keyword_func"),
+    (words("alias and begin BEGIN break case class def defined do else elsif end END ensure for if in module next not or redo rescue "
+           "retry return self super then undef unless until when while yield require require_relative include extend attr_accessor "
+           "attr_reader attr_writer private protected public lambda proc raise"), "keyword"),
+    (r"\b(?:true|false|nil)\b", "literal"), (NUM, "number"),
+], [(r"^=begin\b", r"^=end\b", "comment")], comment="#", funcs=r"^[ \t]*(?:def|class|module)\s+(?:self\.)?(\w+)")
+LUA = Lang("Lua", [".lua"], [], [
+    (r"--(?!\[\[)[^\n]*", "comment"), (STR_DQ, "string"), (STR_SQ, "string"),
+    (r"\bfunction\s+([\w.:]+)", "keyword_func"),
+    (words("and break do else elseif end for function goto if in local not or repeat return then until while"), "keyword"),
+    (r"\b(?:true|false|nil)\b", "literal"), (NUM, "number"), (r"\b[A-Za-z_]\w*(?=\s*\()", "func"),
+], [(r"--\[\[", r"\]\]", "comment"), (r"\[\[", r"\]\]", "string")], comment="--", funcs=r"function\s+([\w.:]+)")
+PERL = Lang("Perl", [".pl", ".pm", ".t"], [], [
+    (r"#[^\n]*", "comment"), (STR_DQ, "string"), (STR_SQ, "string"), (r"[$@%]\w+", "literal"), (r"\bsub\s+(\w+)", "keyword_func"),
+    (words("if elsif else unless while until for foreach do last next redo return sub my our local use no package require "
+           "print say die warn eval defined undef and or not qw"), "keyword"), (NUM, "number"),
+], comment="#", funcs=r"^\s*sub\s+(\w+)")
+RLANG = Lang("R", [".r", ".R", ".rmd"], [], [
+    (r"#[^\n]*", "comment"), (STR_DQ, "string"), (STR_SQ, "string"),
+    (words("if else for while repeat break next return function library require in"), "keyword"),
+    (r"\b(?:TRUE|FALSE|NULL|NA|NaN|Inf)\b", "literal"), (NUM, "number"), (r"[A-Za-z_.][\w.]*(?=\()", "func"),
+], comment="#", funcs=r"^\s*([A-Za-z_.][\w.]*)\s*(?:<-|=)\s*function")
+DOCKER = Lang("Dockerfile", [".dockerfile"], ["dockerfile", "containerfile"], [
+    (r"^\s*#[^\n]*", "comment"), (STR_DQ, "string"), (STR_SQ, "string"), (r"\$\{?\w+\}?", "literal"),
+    (words("FROM RUN CMD LABEL MAINTAINER EXPOSE ENV ADD COPY ENTRYPOINT VOLUME USER WORKDIR ARG ONBUILD STOPSIGNAL HEALTHCHECK SHELL AS"), "keyword"),
+    (NUM, "number"),
+], comment="#", icase=True, funcs=r"(?i)^\s*FROM\s+(\S+)")
+MAKE = Lang("Makefile", [".mk", ".mak"], ["makefile", "gnumakefile"], [
+    (r"#[^\n]*", "comment"), (STR_DQ, "string"), (STR_SQ, "string"), (r"\$[({]\w+[)}]|\$[@<^?*%]", "literal"),
+    (r"^[\w.%/ -]+(?=\s*:(?!=))", "func"), (r"^\s*(?:include|ifeq|ifneq|ifdef|ifndef|else|endif|define|endef|export|override)\b", "keyword"),
+], comment="#", funcs=r"^([\w.%/-]+)\s*:(?!=)")
+DIFF = Lang("Diff / Patch", [".diff", ".patch"], [], [
+    (r"^(?:diff|index|---|\+\+\+)[^\n]*", "keyword"), (r"^@@[^\n]*", "decorator"), (r"^\+[^\n]*", "string"), (r"^-[^\n]*", "error"),
+])
+
+CLIKE.exts = (".m", ".mm", ".proto")                 # the specific languages above own all other extensions
+CLIKE.name = "C-family (other)"
+
+LANGS = [PLAIN, PYTHON, JS, TYPESCRIPT, JSON, HTML, CSS, CPP, CSHARP, JAVA, GO, RUST, KOTLIN, SWIFT, DART, SCALA, PHP, GROOVY, RUBY, LUA, PERL, RLANG, CLIKE, YAML, TOML, MARKDOWN, SQL, BATCH, POWERSHELL, DOCKER, MAKE, DIFF, LOG]
 _BY_EXT = {e: l for l in LANGS for e in l.exts}
 _BY_NAME = {n.lower(): l for l in LANGS for n in l.names}
-_BY_NAME["makefile"] = TOML
-_BY_NAME["dockerfile"] = POWERSHELL
 
 
 def lang_for_path(path):
