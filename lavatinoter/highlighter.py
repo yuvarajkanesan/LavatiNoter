@@ -30,6 +30,17 @@ class Lang:
         self.funcs = re.compile(funcs, re.M) if funcs else None   # group 1 = name shown in the function list
         self.icase = icase
         self._combined = None
+        self._completions = None
+
+    def completions(self):
+        """Keywords and built-in names of this language, taken from its keyword rules (for the suggestion list)."""
+        if self._completions is None:
+            found = set()
+            for rx, _kind in self.rules:
+                for grp in re.findall(r"\b\(\?:([^)]*)\)\\b", rx):
+                    found.update(w for w in grp.split("|") if w.isidentifier() and len(w) > 2)
+            self._completions = found
+        return self._completions
 
     def combined(self):
         if self._combined is None:

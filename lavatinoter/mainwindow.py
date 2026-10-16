@@ -271,6 +271,8 @@ class MainWindow(QMainWindow):
         self.a_spell = A("Spell Check", self.set_spell, None, None, True, self.settings["spellcheck"])
         self.a_autocorrect = A("Auto-correct Misspelled Words", self.set_spell, None, None, True, self.settings["autocorrect"],
                                "Fixes obvious typos in text and Markdown when you finish a word. Backspace right after takes it back.")
+        self.a_complete = A("Word Autocomplete", self.set_complete, None, None, True, self.settings["autocomplete"],
+                            "Suggests words from this document, the language's keywords and common English words while you type")
         self.a_prefs = A("Preferences...", self.preferences, "Ctrl+,")
         self.a_next_tab = A("Next Tab", lambda: self.step_tab(1), "Ctrl+PgDown")
         self.a_prev_tab = A("Previous Tab", lambda: self.step_tab(-1), "Ctrl+PgUp")
@@ -374,6 +376,7 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_prefs)
         m.addAction(self.a_spell)
         m.addAction(self.a_autocorrect)
+        m.addAction(self.a_complete)
         th = m.addMenu("Theme")
         self.theme_group = QActionGroup(self)
         for name in theme.THEME_CHOICES:
@@ -535,6 +538,7 @@ class MainWindow(QMainWindow):
         ed.set_word_wrap(self.settings["word_wrap"])
         ed.set_show_whitespace(self.settings["show_whitespace"])
         ed.set_spellcheck(self.settings["spellcheck"], self.settings["autocorrect"])
+        ed.autocomplete_on = self.settings["autocomplete"]
         ed.zoomRequested.connect(self.zoom)
         ed.filesDropped.connect(self.open_paths)
         ed.cursorStatus.connect(self._update_status)
@@ -1086,6 +1090,12 @@ class MainWindow(QMainWindow):
                                 "so the file stays plain text. The editor hides the marks and just shows the formatting (View > Show Formatting Marks reveals them):\n\n  **bold**   *italic*   <u>underline</u>\n  <span style=\"font-size:24px\">size</span>"
                                 "\n\nThe editor shows them formatted and dims the marks; Markdown viewers and browsers render the same.\n"
                                 "In HTML documents <b>, <i> and <u> are used. Code files are left alone.")
+
+    def set_complete(self, on=None):
+        self.settings["autocomplete"] = self.a_complete.isChecked()
+        for p in self.all_tabs():
+            self.editor_of(p).autocomplete_on = self.settings["autocomplete"] and not p.is_large
+        self.settings.save()
 
     def set_spell(self, _=None):
         self.settings["spellcheck"] = self.a_spell.isChecked()

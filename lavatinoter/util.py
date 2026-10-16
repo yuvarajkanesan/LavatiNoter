@@ -90,6 +90,7 @@ DEFAULTS = {
     "restore_session": True,
     "spellcheck": True,
     "autocorrect": True,
+    "autocomplete": True,
 }
 
 

@@ -382,6 +382,26 @@ def selftest():
             yield b
             b = b.next()
 
+    def t_autocomplete():
+        from lavatinoter.highlighter import PLAIN, PYTHON
+        ed = win.new_file("")
+        ed.set_language(PYTHON)
+        ed.setPlainText("def calculate_total(items):
+    return len(items)
+")
+        assert ed.completion_candidates("calc") == ["calculate_total"]
+        assert "import" in ed.completion_candidates("imp")
+        c = ed.textCursor()
+        c.movePosition(c.MoveOperation.End)
+        ed.setTextCursor(c)
+        keys(ed, "calc")
+        assert ed._completer.popup().isVisible(), "no suggestion list while typing"
+        ed._insert_completion("calculate_total")
+        assert ed.toPlainText().endswith("calculate_total"), ed.toPlainText()
+        ed.set_language(PLAIN)
+        assert "beautiful" in ed.completion_candidates("beaut")
+        ed.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -391,7 +411,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

@@ -66,6 +66,21 @@ class Speller:
     def _match_case(word, fixed):
         return fixed.capitalize() if word[:1].isupper() else fixed
 
+    def words_with_prefix(self, prefix, limit=8):
+        """Common English words that start with `prefix`, most frequent first."""
+        sc = self._checker()
+        if sc is None:
+            return []
+        if not hasattr(self, "_by_freq"):
+            self._by_freq = sorted(sc.word_frequency.dictionary.items(), key=lambda kv: -kv[1])[:30000]
+        out = []
+        for w, _n in self._by_freq:
+            if w.startswith(prefix) and w != prefix and len(w) > len(prefix) + 1 and w.isalpha():
+                out.append(w)
+                if len(out) >= limit:
+                    break
+        return out
+
     def add_word(self, word):
         w = word.lower()
         self.custom.add(w)

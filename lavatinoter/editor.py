@@ -3,11 +3,12 @@ and picture paste (clipboard images are saved next to the document and linked in
 import datetime
 import os
 import re
+import time
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import (QAction, QColor, QPen, QFont, QFontMetricsF, QImage, QPainter, QPixmap, QTextCharFormat, QTextCursor, QTextFormat,
                            QTextOption, QTextBlockUserData)
-from PySide6.QtWidgets import QPlainTextEdit, QTextEdit, QToolTip, QWidget
+from PySide6.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
 from . import spell as spellmod
 from . import theme, util
@@ -62,6 +63,14 @@ class CodeEditor(QPlainTextEdit):
         self.read_only_window = False
         self.marks = []                     # [(start, length)] highlighted by the Mark tab
         self._pix_cache = {}
+        self.autocomplete_on = False
+        self._word_cache = (None, 0.0, None)
+        self._completer = QCompleter(QStringListModel([], self), self)
+        self._completer.setWidget(self)
+        self._completer.setCompletionMode(QCompleter.PopupCompletion)
+        self._completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._completer.setMaxVisibleItems(8)
+        self._completer.activated[str].connect(self._insert_completion)
         self._preview_rects = []            # [(QRect, link block)] of the pictures drawn in the last paint
         self._img_sel = None                # block number of the selected picture
         self._in_zone_fix = False
@@ -467,9 +476,16 @@ class CodeEditor(QPlainTextEdit):
         menu.exec(e.globalPos())
 
     def keyPressEvent(self, e):
+        self._key_press(e)
+        self._maybe_complete(e)
+
+    def _key_press(self, e):
         key, mods = e.key(), e.modifiers()
         if self.isReadOnly():
             return super().keyPressEvent(e)
+        if self._completer.popup().isVisible() and key in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Escape, Qt.Key_Tab, Qt.Key_Backtab):
+            e.ignore()                       # the suggestion list takes these keys (Enter / Tab accept, Esc closes)
+            return
         if self._img_sel is not None and self._image_key(e):
             return
         if key in (Qt.Key_Backspace, Qt.Key_Delete) and not mods and not self.textCursor().hasSelection() and self.lang.name in RICH_LANGS:
@@ -892,6 +908,77 @@ class CodeEditor(QPlainTextEdit):
             self._img_sel = None
             self.viewport().update()
         return False
+
+    # ---- word autocomplete ----------------------------------------------------------------------------------------
+    WORD_TAIL = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
+
+    def _doc_words(self):
+        """{word: count} of the words in this document (refreshed at most twice a second while typing)."""
+        now = time.monotonic()
+        rev = self.document().revision()
+        cached = self._word_cache
+        if cached[0] == rev or (cached[2] is not None and now - cached[1] < 0.5):
+            return cached[2] or {}
+        words = {}
+        if self.length() < 2_000_000:
+            for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", self.toPlainText()):
+                words[w] = words.get(w, 0) + 1
+        self._word_cache = (rev, now, words)
+        return words
+
+    def completion_candidates(self, prefix, limit=12):
+        low = prefix.lower()
+        out, seen = [], {prefix}
+        docw = self._doc_words()
+        for w, _n in sorted(((w, n) for w, n in docw.items() if w.lower().startswith(low) and w != prefix),
+                            key=lambda t: (-t[1], len(t[0]), t[0].lower())):
+            out.append(w)
+            seen.add(w)
+        for w in sorted(self.lang.completions()):
+            if w.lower().startswith(low) and w not in seen:
+                out.append(w)
+                seen.add(w)
+        if len(prefix) >= 3 and len(out) < limit and self.lang.name in ("Plain text", "Markdown"):
+            for w in spellmod.speller.words_with_prefix(low, limit):
+                shown = w.capitalize() if prefix[:1].isupper() else w
+                if shown not in seen:
+                    out.append(shown)
+                    seen.add(shown)
+        return out[:limit]
+
+    def _insert_completion(self, text):
+        prefix_len = len(self._completer.completionPrefix())
+        cur = self.textCursor()
+        cur.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor, prefix_len)
+        cur.insertText(text)
+        self.setTextCursor(cur)
+
+    def _maybe_complete(self, e):
+        popup = self._completer.popup()
+        if not self.autocomplete_on or self.isReadOnly() or self.textCursor().hasSelection():
+            popup.hide()
+            return
+        ch = e.text()
+        typing = bool(ch) and (ch.isalnum() or ch == "_")
+        if not typing and e.key() != Qt.Key_Backspace:
+            popup.hide()
+            return
+        cur = self.textCursor()
+        m = self.WORD_TAIL.search(cur.block().text()[:cur.positionInBlock()])
+        if not m or len(m.group()) < 2:
+            popup.hide()
+            return
+        prefix = m.group()
+        cands = self.completion_candidates(prefix)
+        if not cands:
+            popup.hide()
+            return
+        self._completer.model().setStringList(cands)
+        self._completer.setCompletionPrefix(prefix)
+        popup.setCurrentIndex(self._completer.completionModel().index(0, 0))
+        rect = self.cursorRect()
+        rect.setWidth(max(160, popup.sizeHintForColumn(0) + popup.verticalScrollBar().sizeHint().width() + 24))
+        self._completer.complete(rect)
 
     def toggle_comment(self):
         prefix = self.lang.comment
