@@ -935,6 +935,36 @@ def selftest():
         assert ed.font().pointSizeF() > 0, "the style sheet must not fix the editor font size"
         ed.document().setModified(False)
 
+    def t_zoom():
+        from PySide6.QtCore import QPoint, QPointF
+        from PySide6.QtGui import QWheelEvent
+        ed = win.new_file("zoom me\n" * 20)
+        win.set_font_size(11)
+        before = ed.font().pointSizeF()
+        assert before == 11.0, before
+
+        def wheel(delta, mods=Qt.ControlModifier):
+            pos = QPointF(40, 40)
+            QApplication.sendEvent(ed.viewport(), QWheelEvent(pos, ed.viewport().mapToGlobal(pos), QPoint(0, 0), QPoint(0, delta), Qt.NoButton,
+                                                              mods, Qt.NoScrollPhase, False))
+        wheel(120)
+        wheel(120)
+        assert ed.font().pointSizeF() == 13.0, ed.font().pointSizeF()          # Ctrl + wheel up: bigger
+        wheel(-120)
+        assert ed.font().pointSizeF() == 12.0
+        for _ in range(4):
+            wheel(30)                                                          # four small touchpad ticks make one step
+        assert ed.font().pointSizeF() == 13.0, ed.font().pointSizeF()
+        scroll_before = ed.verticalScrollBar().value()
+        wheel(-120, Qt.NoModifier)                                             # plain wheel still scrolls, not zooms
+        assert ed.font().pointSizeF() == 13.0
+        for _ in range(100):
+            wheel(120)
+        assert ed.font().pointSizeF() == 72.0                                  # there is a ceiling
+        win.a_zoom_reset.trigger()
+        assert ed.font().pointSizeF() == 11.0 and win.settings["font_size"] == 11
+        ed.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -944,7 +974,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

@@ -1773,7 +1773,11 @@ class CodeEditor(QPlainTextEdit):
     # ---- wheel / zoom -----------------------------------------------------------------------------------------
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
-            self.zoomRequested.emit(1 if e.angleDelta().y() > 0 else -1)
+            # Ctrl + wheel zooms the text, one step per notch (a touchpad's small deltas add up to a notch)
+            self._wheel_acc = getattr(self, "_wheel_acc", 0) + e.angleDelta().y()
+            while abs(self._wheel_acc) >= 120:
+                self.zoomRequested.emit(1 if self._wheel_acc > 0 else -1)
+                self._wheel_acc -= 120 if self._wheel_acc > 0 else -120
             e.accept()
             return
         super().wheelEvent(e)

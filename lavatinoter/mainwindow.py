@@ -42,7 +42,7 @@ class PreferencesDialog(QDialog):
             self.family.addItem(fam, fam)
         self.family.setCurrentIndex(max(0, self.family.findData(settings["font_family"])))
         self.size = QSpinBox()
-        self.size.setRange(6, 40)
+        self.size.setRange(6, 72)
         self.size.setValue(settings["font_size"])
         self.tab = QSpinBox()
         self.tab.setRange(1, 16)
@@ -2226,7 +2226,7 @@ class MainWindow(QMainWindow):
         self.set_font_size(self.settings["font_size"] + delta)
 
     def set_font_size(self, size):
-        size = max(6, min(40, size))
+        size = max(6, min(72, size))
         self.settings["font_size"] = size
         for p in self.all_tabs():
             self.editor_of(p).apply_font(size)
@@ -2234,7 +2234,7 @@ class MainWindow(QMainWindow):
                 p.show_window()
         if self.split_pane is not None:
             self.split_editor.apply_font(size)
-        self.flash(f"Font size {size}")
+        self.flash(f"Zoom {round(size / 11 * 100)}%  ({size} pt)   -   Ctrl+wheel or Ctrl +/- to change, Ctrl+0 for 100%")
 
     def preferences(self):
         d = PreferencesDialog(self.settings, self)
