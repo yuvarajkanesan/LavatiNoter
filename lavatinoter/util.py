@@ -92,6 +92,7 @@ DEFAULTS = {
     "autocorrect": True,
     "autocomplete": True,
     "autoclose": True,
+    "plugins_enabled": False,
     "indent_guides": True,
 }
 

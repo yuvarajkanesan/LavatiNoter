@@ -10,6 +10,7 @@ from PySide6.QtGui import (QAction, QColor, QPen, QFont, QFontMetricsF, QImage, 
                            QTextOption, QTextBlockUserData)
 from PySide6.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
+from . import folding
 from . import spell as spellmod
 from . import theme, util
 from .highlighter import PLAIN, RICH_LANGS, Highlighter, lang_for_path, mark_spans
@@ -23,6 +24,7 @@ class BlockData(QTextBlockUserData):
     def __init__(self):
         super().__init__()
         self.bookmark = False
+        self.folded = False
 
 
 class LineNumberArea(QWidget):
@@ -45,6 +47,7 @@ class CodeEditor(QPlainTextEdit):
     zoomRequested = Signal(int)             # Ctrl+wheel
     filesDropped = Signal(list)             # local files dropped or pasted: the window opens them
     imagePasted = Signal(str)               # path of the image file that was saved for a paste
+    definitionRequested = Signal(str)       # Ctrl+click on a name: the window finds its definition
     imageActivated = Signal(str)            # a picture was double-clicked: the window shows it large
 
     is_large = False
@@ -64,6 +67,13 @@ class CodeEditor(QPlainTextEdit):
         self.marks = []                     # [(start, length)] highlighted by the Mark tab
         self._pix_cache = {}
         self.autocomplete_on = False
+        self.folding_on = True
+        self.fold_regions = {}
+        self._has_flags = False
+        self._hidden_any = False
+        self._fold_pills = []
+        self._fold_timer = QTimer(self, singleShot=True, interval=450)
+        self._fold_timer.timeout.connect(self.recompute_folds)
         self.autoclose_on = False
         self.show_guides = True
         self._word_cache = (None, 0.0, None)
@@ -137,6 +147,7 @@ class CodeEditor(QPlainTextEdit):
 
     def set_language(self, lang):
         self.lang = lang
+        self._fold_timer.start()
         self.highlighter.set_lang(lang)
 
     def detect_language(self):
@@ -149,7 +160,7 @@ class CodeEditor(QPlainTextEdit):
     def gutter_width(self):
         last = self.blockCount() + self.line_base
         digits = len(self._fmt_num(max(last, 99)))
-        return 28 + self.fontMetrics().horizontalAdvance("9") * digits
+        return 28 + self.FOLD_W + self.fontMetrics().horizontalAdvance("9") * digits
 
     def _update_gutter_width(self, *_):
         self.setViewportMargins(self.gutter_width(), 0, 0, 0)
@@ -187,7 +198,15 @@ class CodeEditor(QPlainTextEdit):
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
                 p.setPen(QColor(theme.c("TEXT") if number == cur else theme.c("FAINT")))
-                p.drawText(0, top, w - 12, h, Qt.AlignRight | Qt.AlignVCenter, self._fmt_num(number + 1 + self.line_base))
+                p.drawText(0, top, w - 12 - self.FOLD_W, h, Qt.AlignRight | Qt.AlignVCenter, self._fmt_num(number + 1 + self.line_base))
+                if number in self.fold_regions:
+                    folded = self._is_folded(block)
+                    cx, cy = w - 14, top + h // 2
+                    p.setPen(QPen(QColor(theme.c("ACCENT") if folded else theme.c("FAINT")), 1.5))
+                    if folded:
+                        p.drawPolyline([QPoint(cx - 2, cy - 4), QPoint(cx + 2, cy), QPoint(cx - 2, cy + 4)])
+                    else:
+                        p.drawPolyline([QPoint(cx - 4, cy - 2), QPoint(cx, cy + 2), QPoint(cx + 4, cy - 2)])
                 data = block.userData()
                 if isinstance(data, BlockData) and data.bookmark:
                     p.setPen(Qt.NoPen)
@@ -199,6 +218,11 @@ class CodeEditor(QPlainTextEdit):
             number += 1
 
     def gutter_click(self, e):
+        if e.position().x() >= self.gutter.width() - self.FOLD_W - 2 and self.fold_regions:
+            blk = self.cursorForPosition(QPoint(0, int(e.position().y()))).block()
+            if blk.blockNumber() in self.fold_regions:
+                self.fold_block(blk, not self._is_folded(blk))
+                return
         cur = self.cursorForPosition(QPoint(0, int(e.position().y())))
         self.toggle_bookmark(cur.block())
 
@@ -243,12 +267,14 @@ class CodeEditor(QPlainTextEdit):
 
     # ---- highlights -------------------------------------------------------------------------------------
     def _on_cursor(self):
+        self._reveal_cursor()
         self._leave_zone()
         self.cursorStatus.emit()
         self._schedule_refresh()
         self.gutter.update()
 
     def _on_edit(self, pos, removed, added):
+        self._fold_timer.start()
         if self.marks:
             self.marks = []
         self._schedule_refresh()
@@ -865,7 +891,33 @@ class CodeEditor(QPlainTextEdit):
                 return block
         return None
 
+    def word_at_cursor(self):
+        cur = self.textCursor()
+        if cur.hasSelection():
+            t = cur.selectedText().strip()
+            return t if re.fullmatch(r"[A-Za-z_][\w]*", t) else ""
+        text, col = cur.block().text(), cur.positionInBlock()
+        for m in re.finditer(r"[A-Za-z_]\w*", text):
+            if m.start() <= col <= m.end():
+                return m.group()
+        return ""
+
     def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton and e.modifiers() & Qt.ControlModifier and not self.read_only_window and self.is_code():
+            cur = self.cursorForPosition(e.position().toPoint())
+            text, col = cur.block().text(), cur.positionInBlock()
+            word = next((m.group() for m in re.finditer(r"[A-Za-z_]\w*", text) if m.start() <= col <= m.end()), "")
+            if word:
+                self.setTextCursor(cur)
+                self.definitionRequested.emit(word)
+                e.accept()
+                return
+        if e.button() == Qt.LeftButton and self._has_flags:
+            for rect, blk in self._fold_pills:
+                if rect.contains(e.position().toPoint()):
+                    self.fold_block(blk, False)
+                    e.accept()
+                    return
         if e.button() == Qt.LeftButton and not self.read_only_window:
             block = self._image_at(e.position().toPoint())
             if block is not None:                           # a click on a picture selects it instead of editing behind it
@@ -1157,6 +1209,163 @@ class CodeEditor(QPlainTextEdit):
         self.goto_line(line + 1, col)
         self.verticalScrollBar().setValue(bar)
 
+    # ---- code folding ----------------------------------------------------------------------------------------------
+    FOLD_W = 16
+
+    def _bd(self, block):
+        d = block.userData()
+        if not isinstance(d, BlockData):
+            d = BlockData()
+            block.setUserData(d)
+        return d
+
+    def _is_folded(self, block):
+        d = block.userData()
+        return isinstance(d, BlockData) and d.folded
+
+    def recompute_folds(self):
+        """Finds the foldable regions again (called a moment after edits) and re-applies the folds that still exist."""
+        if self.read_only_window or not self.folding_on:
+            self.fold_regions = {}
+        else:
+            self.fold_regions = folding.compute_regions(self.lang.name, self.toPlainText())
+        self._apply_folds()
+        self.gutter.update()
+
+    def _apply_folds(self):
+        doc = self.document()
+        hidden = [False] * doc.blockCount()
+        any_flag = False
+        block = doc.firstBlock()
+        while block.isValid() and self._has_flags:
+            if self._is_folded(block):
+                start = block.blockNumber()
+                end = self.fold_regions.get(start)
+                if end is None:
+                    self._bd(block).folded = False                # its region is gone (the text was edited)
+                else:
+                    any_flag = True
+                    for k in range(start + 1, min(end, len(hidden) - 1) + 1):
+                        hidden[k] = True
+            block = block.next()
+        self._has_flags = any_flag
+        if not any_flag and not self._hidden_any:
+            return
+        self._hidden_any = any(hidden)
+        changed = False
+        block, i = doc.firstBlock(), 0
+        while block.isValid():
+            if block.isVisible() == hidden[i]:
+                block.setVisible(not hidden[i])
+                block.setLineCount(0 if hidden[i] else 1)
+                changed = True
+            block, i = block.next(), i + 1
+        if changed:
+            doc.markContentsDirty(0, max(1, doc.characterCount() - 1))
+            self.viewport().update()
+            self.updateGeometry()
+
+    def fold_block(self, block, fold=True):
+        if block.blockNumber() not in self.fold_regions:
+            return False
+        self._bd(block).folded = fold
+        self._has_flags = self._has_flags or fold
+        cur = self.textCursor()
+        self._apply_folds()
+        if fold and cur.blockNumber() > block.blockNumber() and cur.blockNumber() <= self.fold_regions[block.blockNumber()]:
+            self.setTextCursor(QTextCursor(block))
+        self.gutter.update()
+        return True
+
+    def _region_containing(self, line):
+        best = None
+        for s, e in self.fold_regions.items():
+            if s <= line <= e and (best is None or s > best):
+                best = s
+        return best
+
+    def fold_current(self):
+        """Folds the innermost open block around the caret."""
+        line = self.textCursor().blockNumber()
+        starts = sorted((s for s, e in self.fold_regions.items() if s <= line <= e and not self._is_folded(self.document().findBlockByNumber(s))),
+                        reverse=True)
+        return bool(starts) and self.fold_block(self.document().findBlockByNumber(starts[0]), True)
+
+    def unfold_current(self):
+        line = self.textCursor().blockNumber()
+        folded = sorted((s for s, e in self.fold_regions.items() if s <= line <= e and self._is_folded(self.document().findBlockByNumber(s))),
+                        reverse=True)
+        return bool(folded) and self.fold_block(self.document().findBlockByNumber(folded[-1] if len(folded) > 1 else folded[0]), False)
+
+    def fold_all(self, functions_only=False):
+        doc = self.document()
+        funcs = self.lang.funcs
+        starts = [s for s in self.fold_regions
+                  if not functions_only or (funcs and funcs.search(doc.findBlockByNumber(s).text()))]
+        if functions_only:                                      # fold the functions themselves, not the class around them
+            starts = [s for s in starts if not any(s < t <= self.fold_regions[s] for t in starts)]
+        flagged = []
+        for s in starts:
+            self._bd(doc.findBlockByNumber(s)).folded = True
+            self._has_flags = True
+            flagged.append(s)
+        line = self.textCursor().blockNumber()                  # the caret must not stay inside what is about to be hidden
+        outer = [s for s in flagged if s < line <= self.fold_regions[s]]
+        if outer:
+            self.setTextCursor(QTextCursor(doc.findBlockByNumber(min(outer))))
+        self._apply_folds()
+        self.gutter.update()
+
+    def unfold_all(self):
+        b = self.document().firstBlock()
+        while b.isValid():
+            d = b.userData()
+            if isinstance(d, BlockData) and d.folded:
+                d.folded = False
+            b = b.next()
+        self._has_flags = False
+        self._apply_folds()
+        self.gutter.update()
+
+    def _reveal_cursor(self):
+        """The caret (search hit, Go To, bookmark ...) landed on a hidden line: open the blocks that hide it."""
+        block = self.textCursor().block()
+        if block.isVisible() or not self._has_flags:
+            return
+        line = block.blockNumber()
+        for s, e in sorted(self.fold_regions.items()):
+            sb = self.document().findBlockByNumber(s)
+            if s < line <= e and self._is_folded(sb):
+                self._bd(sb).folded = False
+        self._apply_folds()
+        self.gutter.update()
+
+    def _paint_fold_pills(self):
+        if not self._has_flags:
+            return
+        p = QPainter(self.viewport())
+        fm = self.fontMetrics()
+        self._fold_pills = []
+        block = self.firstVisibleBlock()
+        bottom = self.viewport().height()
+        while block.isValid():
+            geo = self.blockBoundingGeometry(block).translated(self.contentOffset())
+            if geo.top() > bottom:
+                break
+            if block.isVisible() and self._is_folded(block):
+                c = QTextCursor(block)
+                c.movePosition(QTextCursor.EndOfBlock)
+                x = self.cursorRect(c).x() + 8
+                rect = QRect(x, int(geo.top()) + 3, 26, int(geo.height()) - 6)
+                p.setPen(QPen(QColor(theme.c("BORDER2")), 1))
+                p.setBrush(QColor(theme.c("PANEL2")))
+                p.drawRoundedRect(rect, 4, 4)
+                p.setPen(QColor(theme.c("MUTED")))
+                p.drawText(rect, Qt.AlignCenter, "\u2026")
+                self._fold_pills.append((rect, block))
+            block = block.next()
+        p.end()
+
     def toggle_comment(self):
         prefix = self.lang.comment
         if not prefix:
@@ -1363,6 +1572,7 @@ class CodeEditor(QPlainTextEdit):
     def paintEvent(self, e):
         super().paintEvent(e)
         self._paint_indent_guides()
+        self._paint_fold_pills()
         previews = self._visible_previews()
         self._preview_rects = []
         if not previews:

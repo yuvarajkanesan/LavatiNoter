@@ -21,3 +21,11 @@ python -m unittest discover tests
 build.bat            # PyInstaller build + self-test of the packaged exe + dist\LavatiNoter-Setup.exe (Inno Setup 6)
 ```
 Settings and session backups live in `%APPDATA%\LavatiNoter`. Code signing: set `LAVATI_SIGNTOOL` (see `build.bat`).
+
+## For developers
+- **Code folding** by brackets (JS/TS, Java, C#, C/C++, Go, Rust, PHP, CSS, JSON ...), indentation (Python, YAML), headings (Markdown)
+  and tags (HTML/XML); View > Code Folding has Fold / Unfold / Fold All / Fold All Functions.
+- **Format Document** (Shift+Alt+F), Minify JSON, Check Syntax (F7); bracket-pair highlight, Select Inside Brackets, auto-close, indent guides.
+- **Go to Definition** (F12 or Ctrl+click), Find All References (Shift+F12), Go to Symbol (Ctrl+R), Navigate Back (Alt+Left) - pattern based, no language server.
+- **Plugins**: Python files in `%APPDATA%\LavatiNoter\plugins` with a `register(api)` function add commands and event hooks. Off by default;
+  Plugins > Install Sample Plugins copies examples from `sample_plugins/`. Plugins run with the editor's rights - only enable ones you trust.

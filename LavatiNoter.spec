@@ -1,7 +1,7 @@
 # PyInstaller spec: LavatiNoter.exe (windowed app). Run through build.bat.
 from PyInstaller.utils.hooks import collect_data_files
 
-datas = [("fonts", "fonts"), ("assets", "assets")] + collect_data_files("spellchecker")
+datas = [("fonts", "fonts"), ("assets", "assets"), ("sample_plugins", "sample_plugins")] + collect_data_files("spellchecker")
 
 a = Analysis(
     ["main.py"],

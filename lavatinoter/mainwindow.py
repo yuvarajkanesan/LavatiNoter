@@ -11,11 +11,12 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBo
                                QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
                                QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget, QComboBox, QLineEdit)
 
-from . import APP_NAME, VERSION, formatter, session, theme, util
+from . import APP_NAME, VERSION, formatter, plugins, session, symbols, theme, util
 from .editor import CodeEditor
 from .finddialog import FindDialog
 from .highlighter import LANGS, PLAIN, lang_by_name, lang_for_path
 from .largefile import GoToPanel, LargeFileView
+from . import search
 from .panels import FunctionsPanel, ImagePreview, ImagesPanel, MinimapWidget, ResultsPanel, WorkspacePanel, reveal_in_explorer
 
 MB = 1024 * 1024
@@ -112,6 +113,9 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_status()
         self.find_dialog = FindDialog(self)
+        self.plugins = plugins.PluginManager(self)
+        self._plugin_actions = []
+        self._nav = []                       # (tab key, line) places to go Back to
         self._autosave = QTimer(self, singleShot=True, interval=2500)      # like Notepad++: unsaved work is backed up as you type
         self._autosave.timeout.connect(self._backup_session)
         self._content_timer = QTimer(self, singleShot=True, interval=350)
@@ -128,6 +132,8 @@ class MainWindow(QMainWindow):
         if settings["workspace"] and os.path.isdir(settings["workspace"]):
             self.workspace.set_root(settings["workspace"])
         QApplication.instance().applicationStateChanged.connect(self._app_state)
+        if settings["plugins_enabled"]:
+            QTimer.singleShot(0, self.reload_plugins)
 
     # ---- construction ---------------------------------------------------------------------------------------------
     def _dock(self, title, widget, area, name):
@@ -253,6 +259,15 @@ class MainWindow(QMainWindow):
         self.a_select_in = A("Select Inside Brackets", lambda: self._ed_call("select_enclosing"), "Ctrl+Alt+B")
         self.a_autoclose = A("Auto-close Brackets and Quotes", self.set_autoclose, None, None, True, self.settings["autoclose"])
         self.view_guides = A("Indent Guides", self.set_guides, None, None, True, self.settings["indent_guides"])
+        self.a_fold = A("Fold", lambda: self._ed_call("fold_current"), "Ctrl+Shift+[")
+        self.a_unfold = A("Unfold", lambda: self._ed_call("unfold_current"), "Ctrl+Shift+]")
+        self.a_fold_all = A("Fold All", lambda: self._ed_call("fold_all"), "Alt+0")
+        self.a_fold_funcs = A("Fold All Functions / Methods", lambda: self._ed_call("fold_all", True), "Alt+9")
+        self.a_unfold_all = A("Unfold All", lambda: self._ed_call("unfold_all"), "Alt+Shift+0")
+        self.a_goto_def = A("Go to Definition", self.go_to_definition, "F12", None, tip="Finds where the name under the caret is defined (Ctrl+click)")
+        self.a_refs = A("Find All References", self.find_references, "Shift+F12")
+        self.a_symbol = A("Go to Symbol in File...", self.go_to_symbol, "Ctrl+R")
+        self.a_back = A("Navigate Back", self.nav_back, "Alt+Left")
         self.a_find = A("Find...", lambda: self.find_dialog.show_tab(0, self._selected_text()), S.Find, "find", tip="Find (Ctrl+F)")
         self.a_replace = A("Replace...", lambda: self.find_dialog.show_tab(1, self._selected_text()), "Ctrl+H", "replace", tip="Replace (Ctrl+H)")
         self.a_find_files = A("Find in Files...", lambda: self.find_dialog.show_tab(2, self._selected_text()), "Ctrl+Shift+F")
@@ -352,10 +367,13 @@ class MainWindow(QMainWindow):
 
         m = mb.addMenu("Search")
         for a in (self.a_find, self.a_find_next, self.a_find_prev, self.a_replace, self.a_find_files, self.a_mark, None,
-                  self.a_goto, self.a_bracket, self.a_select_in):
+                  self.a_goto, self.a_goto_def, self.a_refs, self.a_symbol, self.a_back, self.a_bracket, self.a_select_in):
             m.addSeparator() if a is None else m.addAction(a)
 
         m = mb.addMenu("View")
+        fm = m.addMenu("Code Folding")
+        for a in (self.a_fold, self.a_unfold, self.a_fold_all, self.a_fold_funcs, self.a_unfold_all):
+            fm.addAction(a)
         for a in (self.view_wrap, self.view_ws, self.view_guides, self.view_marks, None, self.show_workspace, self.view_map, self.view_results, None,
                   self.a_zoom_in, self.a_zoom_out, self.a_zoom_reset, None, self.a_full):
             m.addSeparator() if a is None else m.addAction(a)
@@ -404,6 +422,9 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_paste_image)
         m.addAction(self.a_find_files)
         m.addAction(self.a_reveal)
+
+        self.plugins_menu = mb.addMenu("Plugins")
+        self.plugins_menu.aboutToShow.connect(self._fill_plugins_menu)
 
         self.window_menu = mb.addMenu("Window")
         self.window_menu.aboutToShow.connect(self._fill_window_menu)
@@ -561,6 +582,7 @@ class MainWindow(QMainWindow):
         ed.document().contentsChanged.connect(self._content_timer.start)
         ed.imagePasted.connect(self._image_pasted)
         ed.imageActivated.connect(lambda path: ImagePreview(path, self).exec())
+        ed.definitionRequested.connect(lambda w: self.go_to_definition(w))
         return ed
 
     def _modification_changed(self, page):
@@ -697,6 +719,7 @@ class MainWindow(QMainWindow):
         if line:
             self._jump_line(line)
         self.raise_window()
+        self.plugins.emit("open", path)
         self.results.log(f"Opened {path}" + (" (large file mode)" if page.is_large else ""))
         return page
 
@@ -842,6 +865,7 @@ class MainWindow(QMainWindow):
         page.mtime = os.path.getmtime(path)
         self.settings.add_recent(path)
         self.flash(f"Saved {os.path.basename(path)}")
+        self.plugins.emit("save", path)
         self.results.log(f"Saved {path}")
         self._decorate_tab(page)
         self._update_status()
@@ -1105,6 +1129,198 @@ class MainWindow(QMainWindow):
                                 "so the file stays plain text. The editor hides the marks and just shows the formatting (View > Show Formatting Marks reveals them):\n\n  **bold**   *italic*   <u>underline</u>\n  <span style=\"font-size:24px\">size</span>"
                                 "\n\nThe editor shows them formatted and dims the marks; Markdown viewers and browsers render the same.\n"
                                 "In HTML documents <b>, <i> and <u> are used. Code files are left alone.")
+
+    # ---- navigation: definitions, references, symbols ---------------------------------------------------------------
+    def _nav_push(self):
+        page = self.current()
+        ed = self.editor_of(page)
+        if page is not None and not page.is_large and (not self._nav or self._nav[-1][0] != self.tab_key(page) or
+                                                         self._nav[-1][1] != ed.textCursor().blockNumber() + 1):
+            self._nav.append((self.tab_key(page), ed.textCursor().blockNumber() + 1))
+            del self._nav[:-50]
+
+    def _show_location(self, path, line, name=None):
+        self.open_hit(path, line, 0, 0)
+        ed = self.editor_of(self.current())
+        if ed is not None and name:
+            b = ed.document().findBlockByNumber(line - 1)
+            i = b.text().find(name)
+            if i >= 0:
+                ed.select_range(b.position() + i, len(name))
+        if ed is not None:
+            ed.setFocus()
+
+    def nav_back(self):
+        if not self._nav:
+            self.flash("Nothing to go back to")
+            return
+        key, line = self._nav.pop()
+        self.open_hit(key, line, 0, 0)
+
+    def _project_root(self):
+        page = self.current()
+        return self.workspace.root or (os.path.dirname(page.path) if page is not None and page.path else "")
+
+    def go_to_definition(self, name=None):
+        page = self.current()
+        ed = self.editor_of(page)
+        if ed is None or page.is_large:
+            return
+        name = name if isinstance(name, str) and name else ed.word_at_cursor()
+        if not name:
+            self.flash("Put the caret on a name first")
+            return
+        found = []
+        for ln, text in symbols.definitions_in_text(ed.lang, ed.toPlainText(), name):
+            found.append((self.tab_key(page), ln, text))
+        if not found and self._project_root():
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                found = symbols.find_definitions(name, self._project_root(), page.path)
+            finally:
+                QApplication.restoreOverrideCursor()
+        if not found:
+            self.flash(f'No definition of "{name}" found' + ("" if self._project_root() else " (open a folder as workspace to search other files)"))
+            return
+        if len(found) == 1 or all(f[0] == found[0][0] for f in found[:1]) and len({f[0] for f in found}) == 1 and len(found) == 1:
+            self._nav_push()
+            self._show_location(found[0][0], found[0][1], name)
+            return
+        by_file = {}
+        for path, ln, text in found:
+            i = text.find(name)
+            by_file.setdefault(path, search.FileResult(path)).hits.append(search.Hit(ln, max(0, i), len(name), text, 0))
+        self._nav_push()
+        self.results.show_results(f'Definitions of "{name}"', list(by_file.values()))
+        self.show_results_dock()
+
+    def find_references(self):
+        ed = self.editor_of(self.current())
+        name = ed.word_at_cursor() if ed is not None else ""
+        root = self._project_root()
+        if not name or not root:
+            self.flash("Put the caret on a name, and open a folder as workspace, to find its references")
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            res = symbols.find_references(name, root)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.results.show_results(f'References to "{name}"', res)
+        self.show_results_dock()
+
+    def go_to_symbol(self):
+        page = self.current()
+        ed = self.editor_of(page)
+        if ed is None or page.is_large:
+            return
+        syms = symbols.symbols_in_text(ed.lang, ed.toPlainText())
+        if not syms:
+            self.flash("No functions or classes found in this document")
+            return
+        d = QDialog(self)
+        d.setWindowTitle("Go to Symbol")
+        d.setMinimumSize(460, 380)
+        lay = QVBoxLayout(d)
+        box = QLineEdit()
+        box.setPlaceholderText("Type to filter functions and classes...")
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem
+        lst = QListWidget()
+        lay.addWidget(box)
+        lay.addWidget(lst, 1)
+
+        def fill():
+            lst.clear()
+            q = box.text().lower()
+            for name, ln, text in syms:
+                if q in name.lower():
+                    it = QListWidgetItem(f"{name}    \u2014 line {ln}")
+                    it.setData(Qt.UserRole, ln)
+                    lst.addItem(it)
+            if lst.count():
+                lst.setCurrentRow(0)
+
+        def go(*_):
+            it = lst.currentItem()
+            if it:
+                d.accept()
+                self._nav_push()
+                ed.goto_line(it.data(Qt.UserRole))
+                ed.setFocus()
+        box.textChanged.connect(fill)
+        box.returnPressed.connect(go)
+        lst.itemActivated.connect(go)
+        fill()
+        d.exec()
+
+    # ---- plugins ---------------------------------------------------------------------------------------------------------
+    def set_plugins_enabled(self, on):
+        if on and not self.settings["plugins_enabled"]:
+            r = QMessageBox.warning(self, "Enable plugins",
+                                    "Plugins are Python files from your plugins folder. They run with the same rights as "
+                                    f"{APP_NAME} and can read and change your files.\n\nOnly enable plugins you wrote or trust.\n\n"
+                                    f"Folder: {plugins.plugins_dir()}", QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Cancel)
+            if r != QMessageBox.Ok:
+                return
+        self.settings["plugins_enabled"] = on
+        self.settings.save()
+        self.reload_plugins()
+
+    def reload_plugins(self):
+        for a in self._plugin_actions:
+            self.removeAction(a)
+            a.deleteLater()
+        self._plugin_actions = []
+        if not self.settings["plugins_enabled"]:
+            self.plugins.plugins, self.plugins.handlers = [], {}
+            return
+        for p in self.plugins.load_all():
+            p["actions"] = []
+            for title, fn, shortcut in p["commands"]:
+                a = QAction(title, self)
+                if shortcut:
+                    a.setShortcut(QKeySequence(shortcut))
+                a.triggered.connect(lambda _=False, pn=p["name"], t=title, f=fn: self.plugins.run(pn, t, f))
+                self.addAction(a)
+                p["actions"].append(a)
+                self._plugin_actions.append(a)
+        loaded = [p for p in self.plugins.plugins if not p["error"]]
+        self.flash(f"{len(loaded)} plugin{'s' if len(loaded) != 1 else ''} loaded" + (f", {len(self.plugins.plugins) - len(loaded)} failed" if len(loaded) != len(self.plugins.plugins) else ""))
+
+    def install_sample_plugins(self):
+        copied = plugins.install_samples()
+        self.flash(f"Installed {len(copied)} sample plugin{'s' if len(copied) != 1 else ''}" if copied else "The sample plugins are already installed")
+        if self.settings["plugins_enabled"]:
+            self.reload_plugins()
+
+    def _fill_plugins_menu(self):
+        m = self.plugins_menu
+        m.clear()
+        en = m.addAction("Enable Plugins")
+        en.setCheckable(True)
+        en.setChecked(self.settings["plugins_enabled"])
+        en.triggered.connect(lambda checked: self.set_plugins_enabled(checked))
+        m.addAction("Reload Plugins", self.reload_plugins).setEnabled(self.settings["plugins_enabled"])
+        m.addAction("Install Sample Plugins", self.install_sample_plugins)
+        m.addAction("Open Plugins Folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(plugins.plugins_dir())))
+        m.addSeparator()
+        if not self.settings["plugins_enabled"]:
+            m.addAction("(plugins are off)").setEnabled(False)
+            return
+        if not self.plugins.plugins:
+            m.addAction("(no plugins installed)").setEnabled(False)
+        for p in self.plugins.plugins:
+            if p["error"]:
+                m.addAction(f"{p['file']}  (failed - see Console)").setEnabled(False)
+                continue
+            sub = m.addMenu(p["name"] + (f"  {p['version']}" if p["version"] else ""))
+            if p["description"]:
+                sub.setToolTipsVisible(True)
+                sub.setToolTip(p["description"])
+            for a in p.get("actions", []):
+                sub.addAction(a)
+            if not p.get("actions"):
+                sub.addAction("(no commands)").setEnabled(False)
 
     def set_autoclose(self, on=None):
         self.settings["autoclose"] = self.a_autoclose.isChecked()

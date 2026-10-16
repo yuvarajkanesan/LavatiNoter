@@ -451,6 +451,96 @@ def selftest():
         for p in (ed, js, py):
             p.document().setModified(False)
 
+    def t_folding():
+        from lavatinoter import folding
+        from lavatinoter.highlighter import JS, PYTHON
+        py_src = "import os\n\nclass A:\n    def f(self):\n        x = 1\n        return x\n\n    def g(self):\n        pass\n\nprint(1)\n"
+        r = folding.compute_regions("Python", py_src)
+        assert r == {2: 8, 3: 5, 7: 8}, r
+        js_src = "function f() {\n  if (a) {\n    b();\n  }\n  const s = '{';\n}\nlet o = [\n 1,\n 2\n];\n"
+        r = folding.compute_regions("JavaScript", js_src)
+        assert r == {0: 5, 1: 3, 6: 9}, r
+        assert folding.compute_regions("Markdown", "# A\ntext\n## B\nmore\n# C\nx")[0] == 3
+        assert folding.compute_regions("HTML / XML", "<div>\n<p>\nx\n</p>\n</div>") == {0: 4, 1: 3}
+        ed = win.new_file(js_src)
+        ed.set_language(JS)
+        ed.recompute_folds()
+        doc = ed.document()
+        assert ed.fold_block(doc.findBlockByNumber(1), True)
+        assert [doc.findBlockByNumber(i).isVisible() for i in range(6)] == [True, True, False, False, True, True]
+        assert ed.fold_block(doc.findBlockByNumber(0), True)
+        assert not doc.findBlockByNumber(4).isVisible() and not doc.findBlockByNumber(5).isVisible()
+        ed.goto_line(3)                                                     # a hit inside a fold opens it
+        assert doc.findBlockByNumber(2).isVisible() and doc.findBlockByNumber(1).isVisible()
+        ed.fold_all()
+        assert not doc.findBlockByNumber(1).isVisible()
+        ed.unfold_all()
+        assert all(doc.findBlockByNumber(i).isVisible() for i in range(doc.blockCount()))
+        ed.setPlainText(py_src)
+        ed.set_language(PYTHON)
+        ed.recompute_folds()
+        ed.fold_all(functions_only=True)
+        vis = [doc.findBlockByNumber(i).isVisible() for i in range(doc.blockCount())]
+        assert vis[3] and not vis[4] and not vis[5] and vis[7] and not vis[8], vis
+        ed.document().setModified(False)
+
+    def t_navigation():
+        from lavatinoter import symbols
+        from lavatinoter.highlighter import PYTHON
+        proj = os.path.join(work, "navproj")
+        os.makedirs(proj, exist_ok=True)
+        with open(os.path.join(proj, "util.py"), "w", encoding="utf-8") as f:
+            f.write("MAX_ITEMS = 5\n\ndef compute(x):\n    return x * 2\n")
+        with open(os.path.join(proj, "main_app.py"), "w", encoding="utf-8") as f:
+            f.write("from util import compute\n\nprint(compute(MAX_ITEMS))\n")
+        defs = symbols.find_definitions("compute", proj)
+        assert [(os.path.basename(p), ln) for p, ln, _ in defs] == [("util.py", 3)], defs
+        assert [(os.path.basename(p), ln) for p, ln, _ in symbols.find_definitions("MAX_ITEMS", proj)] == [("util.py", 1)]
+        refs = symbols.find_references("compute", proj)
+        assert sum(len(r.hits) for r in refs) == 3, refs                       # import, call in main_app, def in util
+        win.workspace.set_root(proj)
+        page = win.open_path(os.path.join(proj, "main_app.py"))
+        c = page.textCursor()
+        c.setPosition(page.toPlainText().index("compute(MAX"))
+        page.setTextCursor(c)
+        win.go_to_definition()
+        cur = win.current()
+        assert os.path.basename(cur.path) == "util.py" and cur.textCursor().blockNumber() == 2, (cur.path, cur.textCursor().blockNumber())
+        assert cur.textCursor().selectedText() == "compute"
+        win.nav_back()
+        assert os.path.basename(win.current().path) == "main_app.py"
+        win.find_references()
+        assert win.results.tree.topLevelItemCount() == 1
+        syms = symbols.symbols_in_text(PYTHON, "def a():\n    pass\nclass B:\n    def c(self): pass\n")
+        assert [s[0] for s in syms] == ["a", "B", "c"], syms
+        win.workspace.set_root("")
+
+    def t_plugins():
+        from lavatinoter import plugins
+        pdir = plugins.plugins_dir()
+        with open(os.path.join(pdir, "demo.py"), "w", encoding="utf-8") as f:
+            f.write("NAME = 'Demo'\nVERSION = '1'\ndef register(api):\n    api.add_command('Shout', lambda: api.set_text(api.text().upper()))\n"
+                    "    api.on('save', lambda p: api.log('saved ' + p))\n")
+        with open(os.path.join(pdir, "broken.py"), "w", encoding="utf-8") as f:
+            f.write("def register(api):\n    raise RuntimeError('boom')\n")
+        win.settings["plugins_enabled"] = True
+        win.reload_plugins()
+        names = {p["file"]: p for p in win.plugins.plugins}
+        assert names["demo.py"]["error"] is None and names["broken.py"]["error"], names          # a broken plugin never breaks the editor
+        ed = win.new_file("hello")
+        names["demo.py"]["actions"][0].trigger()
+        assert ed.toPlainText() == "HELLO", ed.toPlainText()
+        win.plugins.emit("save", "x.txt")
+        assert "saved x.txt" in win.results.console.toPlainText()
+        win._fill_plugins_menu()
+        assert plugins.install_samples()                                                           # sample plugins are installed
+        win.reload_plugins()
+        assert any(p["name"] == "Word count" and not p["error"] for p in win.plugins.plugins), win.plugins.plugins
+        win.settings["plugins_enabled"] = False
+        win.reload_plugins()
+        assert win.plugins.plugins == []
+        ed.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -460,7 +550,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:
