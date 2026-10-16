@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QToolTip, Q
 from . import folding
 from . import spell as spellmod
 from . import theme, util
+from .finddialog_pos import PosMap
 from .highlighter import PLAIN, RICH_LANGS, Highlighter, lang_for_path, mark_spans
 
 BRACKETS = {"(": ")", "[": "]", "{": "}"}
@@ -67,6 +68,10 @@ class CodeEditor(QPlainTextEdit):
         self.marks = []                     # [(start, length)] highlighted by the Mark tab
         self._pix_cache = {}
         self.autocomplete_on = False
+        self.extra_cursors = []
+        self._col_anchor = None
+        self.is_hex = False
+        self.config = {}
         self.folding_on = True
         self.fold_regions = {}
         self._has_flags = False
@@ -292,6 +297,7 @@ class CodeEditor(QPlainTextEdit):
             line.cursor.clearSelection()
             sels.append(line)
         sels += self._image_hide_selections()
+        sels += self._extra_cursor_selections()
         sels += self._mark_selections()
         sels += self._smart_selections()
         sels += self._bracket_selections()
@@ -530,6 +536,8 @@ class CodeEditor(QPlainTextEdit):
             e.ignore()                       # the suggestion list takes these keys (Enter / Tab accept, Esc closes)
             return
         if self._img_sel is not None and self._image_key(e):
+            return
+        if self.extra_cursors and self._multi_key(e):
             return
         if key in (Qt.Key_Backspace, Qt.Key_Delete) and not mods and not self.textCursor().hasSelection() and self.lang.name in RICH_LANGS:
             c = self.textCursor()
@@ -903,6 +911,24 @@ class CodeEditor(QPlainTextEdit):
         return ""
 
     def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton and not self.read_only_window:
+            mods = e.modifiers()
+            pos = self.cursorForPosition(e.position().toPoint())
+            if mods & Qt.AltModifier and mods & Qt.ShiftModifier:               # column selection starts here
+                self._col_anchor = (pos.blockNumber(), pos.positionInBlock())
+                self.setTextCursor(pos)
+                self.extra_cursors = []
+                e.accept()
+                return
+            if mods & Qt.AltModifier:                                          # Alt+click adds a cursor
+                if not self.extra_cursors:
+                    pass
+                self.add_cursor_at(pos.position())
+                e.accept()
+                return
+            self._col_anchor = None
+            if self.extra_cursors:
+                self.clear_extra_cursors()
         if e.button() == Qt.LeftButton and e.modifiers() & Qt.ControlModifier and not self.read_only_window and self.is_code():
             cur = self.cursorForPosition(e.position().toPoint())
             text, col = cur.block().text(), cur.positionInBlock()
@@ -937,6 +963,19 @@ class CodeEditor(QPlainTextEdit):
             self._img_sel = None
             self.viewport().update()
         super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._col_anchor is not None and e.buttons() & Qt.LeftButton and e.modifiers() & Qt.AltModifier:
+            pos = self.cursorForPosition(e.position().toPoint())
+            self._column_select(self._col_anchor[0], self._col_anchor[1], pos.blockNumber(), pos.positionInBlock())
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._col_anchor is not None:
+            self._col_anchor = None
+            self.cursorStatus.emit()
+        super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e):
         block = self._image_at(e.position().toPoint()) if not self.read_only_window else None
@@ -1366,6 +1405,233 @@ class CodeEditor(QPlainTextEdit):
             block = block.next()
         p.end()
 
+    # ---- multiple cursors and column selection ------------------------------------------------------------------------
+    def _all_cursors(self):
+        return [self.textCursor()] + self.extra_cursors
+
+    def clear_extra_cursors(self):
+        if self.extra_cursors:
+            self.extra_cursors = []
+            self.refresh_selections()
+            self.viewport().update()
+            self.cursorStatus.emit()
+
+    def _dedupe_cursors(self):
+        main = self.textCursor()
+        seen = {(main.anchor(), main.position())}
+        keep = []
+        for c in self.extra_cursors:
+            key = (c.anchor(), c.position())
+            if key not in seen:
+                seen.add(key)
+                keep.append(c)
+        self.extra_cursors = keep
+
+    def add_cursor_at(self, pos, anchor=None):
+        c = QTextCursor(self.document())
+        c.setPosition(pos)
+        if anchor is not None:
+            c.setPosition(anchor)
+            c.setPosition(pos, QTextCursor.KeepAnchor)
+        self.extra_cursors.append(c)
+        self._dedupe_cursors()
+        self.refresh_selections()
+        self.viewport().update()
+        self.cursorStatus.emit()
+
+    def add_next_occurrence(self):
+        """Ctrl+Alt+D: selects the word (first time), then adds the next match of the selected text as another cursor."""
+        main = self.textCursor()
+        if not main.hasSelection():
+            main.select(QTextCursor.WordUnderCursor)
+            if not main.hasSelection():
+                return False
+            self.setTextCursor(main)
+            return True
+        needle = main.selectedText()
+        if "\u2029" in needle:
+            return False
+        text = self.toPlainText()
+        pm = PosMap(text)
+        last_end = max(c.selectionEnd() for c in self._all_cursors())
+        i = text.find(needle, pm.to_py(last_end))
+        if i < 0:
+            i = text.find(needle)
+        if i < 0:
+            return False
+        a, b = pm.to_q(i), pm.to_q(i + len(needle))
+        if any(c.selectionStart() == a and c.selectionEnd() == b for c in self._all_cursors()):
+            return False
+        self.add_cursor_at(b, a)
+        self.ensureCursorVisible()
+        return True
+
+    def select_all_occurrences(self):
+        main = self.textCursor()
+        if not main.hasSelection():
+            main.select(QTextCursor.WordUnderCursor)
+        needle = main.selectedText()
+        if not needle or "\u2029" in needle:
+            return False
+        text = self.toPlainText()
+        pm = PosMap(text)
+        self.extra_cursors = []
+        found = [m.start() for m in re.finditer(re.escape(needle), text)][:5000]
+        for i in found:
+            a, b = pm.to_q(i), pm.to_q(i + len(needle))
+            if a == main.selectionStart():
+                continue
+            self.add_cursor_at(b, a)
+        self.setTextCursor(main)
+        self.refresh_selections()
+        return True
+
+    def add_cursor_vertical(self, up):
+        cursors = self._all_cursors()
+        base = min(cursors, key=lambda c: c.position()) if up else max(cursors, key=lambda c: c.position())
+        block = base.block().previous() if up else base.block().next()
+        if not block.isValid():
+            return False
+        col = min(base.positionInBlock(), len(block.text()))
+        self.add_cursor_at(block.position() + col)
+        return True
+
+    def _column_select(self, anchor_line, anchor_col, line, col):
+        """Alt+Shift+drag: one cursor per line, each selecting the columns between the two corners."""
+        doc = self.document()
+        lo, hi = sorted((anchor_col, col))
+        lines = range(min(anchor_line, line), max(anchor_line, line) + 1)
+        cursors = []
+        for ln in lines:
+            b = doc.findBlockByNumber(ln)
+            if not b.isValid():
+                continue
+            n = len(b.text())
+            c = QTextCursor(doc)
+            c.setPosition(b.position() + min(lo, n))
+            c.setPosition(b.position() + min(hi, n), QTextCursor.KeepAnchor)
+            cursors.append(c)
+        if not cursors:
+            return
+        main = next((c for c in cursors if c.block().blockNumber() == line), cursors[-1])
+        self.setTextCursor(main)
+        self.extra_cursors = [c for c in cursors if c is not main]
+        self.refresh_selections()
+        self.viewport().update()
+
+    def _multi_key(self, e):
+        """Keys while several cursors are active. -> True when handled here."""
+        key, mods = e.key(), e.modifiers()
+        ctrl = bool(mods & Qt.ControlModifier)
+        shift = bool(mods & Qt.ShiftModifier)
+        if key == Qt.Key_Escape:
+            self.clear_extra_cursors()
+            return True
+        move = {Qt.Key_Left: QTextCursor.Left, Qt.Key_Right: QTextCursor.Right, Qt.Key_Up: QTextCursor.Up,
+                Qt.Key_Down: QTextCursor.Down, Qt.Key_Home: QTextCursor.StartOfBlock, Qt.Key_End: QTextCursor.EndOfBlock}
+        if key in move and not (mods & Qt.AltModifier):
+            op = move[key]
+            if ctrl and key == Qt.Key_Left:
+                op = QTextCursor.WordLeft
+            elif ctrl and key == Qt.Key_Right:
+                op = QTextCursor.WordRight
+            mode = QTextCursor.KeepAnchor if shift else QTextCursor.MoveAnchor
+            cursors = self._all_cursors()
+            for c in cursors:
+                if not shift and c.hasSelection() and key in (Qt.Key_Left, Qt.Key_Right):
+                    c.setPosition(c.selectionStart() if key == Qt.Key_Left else c.selectionEnd())
+                else:
+                    c.movePosition(op, mode)
+            self.setTextCursor(cursors[0])
+            self._dedupe_cursors()
+            self._after_multi()
+            return True
+        if ctrl and key in (Qt.Key_C, Qt.Key_X):
+            cursors = sorted(self._all_cursors(), key=lambda c: c.selectionStart())
+            texts = [c.selectedText().replace("\u2029", "\n") for c in cursors if c.hasSelection()]
+            if texts:
+                QGuiApplication.clipboard().setText("\n".join(texts))
+            if key == Qt.Key_X:
+                self._multi_edit(lambda c: c.removeSelectedText() if c.hasSelection() else None)
+            return True
+        if ctrl and key == Qt.Key_V:
+            clip = QGuiApplication.clipboard().text().replace("\r\n", "\n")
+            cursors = sorted(self._all_cursors(), key=lambda c: c.selectionStart())
+            parts = clip.split("\n")
+            if len(parts) == len(cursors):
+                mapping = {id(c): parts[i] for i, c in enumerate(cursors)}
+                self._multi_edit(lambda c: c.insertText(mapping[id(c)]))
+            else:
+                self._multi_edit(lambda c: c.insertText(clip))
+            return True
+        if ctrl or (mods & Qt.AltModifier):
+            self.clear_extra_cursors()
+            return False
+        if key in (Qt.Key_Backspace, Qt.Key_Delete):
+            def erase(c):
+                if c.hasSelection():
+                    c.removeSelectedText()
+                elif key == Qt.Key_Backspace:
+                    c.deletePreviousChar()
+                else:
+                    c.deleteChar()
+            self._multi_edit(erase)
+            return True
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            def newline(c):
+                indent = re.match(r"[ \t]*", c.block().text()).group()
+                c.insertText("\n" + indent)
+            self._multi_edit(newline)
+            return True
+        if key == Qt.Key_Tab:
+            unit = self._indent_unit()
+            self._multi_edit(lambda c: c.insertText(unit))
+            return True
+        ch = e.text()
+        if ch and ch >= " " and ch != "\x7f":
+            self._multi_edit(lambda c: c.insertText(ch))
+            return True
+        return False
+
+    def _multi_edit(self, fn):
+        """Applies one edit at every cursor as a single undo step (the cursors follow the text as it changes)."""
+        cursors = self._all_cursors()
+        order = sorted(cursors, key=lambda c: c.position(), reverse=True)       # later text first, so earlier cursors stay valid
+        main = cursors[0]
+        main.beginEditBlock()
+        for c in order:
+            fn(c)
+        main.endEditBlock()
+        self.setTextCursor(main)
+        self.extra_cursors = cursors[1:]
+        self._dedupe_cursors()
+        self._after_multi()
+
+    def _after_multi(self):
+        self.ensureCursorVisible()
+        self.refresh_selections()
+        self.viewport().update()
+        self.cursorStatus.emit()
+
+    def _extra_cursor_selections(self):
+        out = []
+        for c in self.extra_cursors:
+            if c.hasSelection():
+                s = QTextEdit.ExtraSelection()
+                s.format.setBackground(QColor(theme.c("SEL_BG")))
+                s.cursor = c
+                out.append(s)
+        return out
+
+    def _paint_extra_carets(self):
+        if not self.extra_cursors:
+            return
+        p = QPainter(self.viewport())
+        for c in self.extra_cursors:
+            r = self.cursorRect(c)
+            p.fillRect(r.x(), r.y(), 2, r.height(), QColor(theme.c("ACCENT")))
+        p.end()
+
     def toggle_comment(self):
         prefix = self.lang.comment
         if not prefix:
@@ -1573,6 +1839,7 @@ class CodeEditor(QPlainTextEdit):
         super().paintEvent(e)
         self._paint_indent_guides()
         self._paint_fold_pills()
+        self._paint_extra_carets()
         previews = self._visible_previews()
         self._preview_rects = []
         if not previews:

@@ -28,7 +28,43 @@ _LIGHT = dict(
     SYN_FUNC="#8a6d00", SYN_DECOR="#7a4fd1", SYN_BUILTIN="#0b7a94", SYN_TYPE="#946000", SYN_TAG="#b85d0c",
     SYN_ATTR="#8a6d00", SYN_KEY="#0b7a94", SYN_LITERAL="#8a3fc4", SYN_OP="#485468", SYN_ERROR="#c62828",
     SYN_WARN="#b85d0c", SYN_INFO="#0b7a94")
-PALETTES = {"Dark": _DARK, "Light": _LIGHT}
+
+def _variant(base, **kw):
+    d = dict(base)
+    d.update(kw)
+    return d
+
+
+_MONOKAI = _variant(
+    _DARK, BG="#1b1c18", PANEL="#23241f", EDITOR="#272822", PANEL2="#2f302a", FIELD="#1f201b", BORDER="#38392f", BORDER2="#4a4b3f",
+    TEXT="#f8f8f2", MUTED="#a6a68f", FAINT="#75715e", ACCENT="#a6e22e", ACCENT_HOVER="#bef25a", ON_ACCENT="#1b1c18",
+    ACCENT_BG="#34401d", RED="#f92672", BLUE="#66d9ef", ORANGE="#fd971f", HOVER="#34352d", SELECTED="#3e3d32", LINE_HL="#2f302a",
+    SEL_BG="#49483e", SMART_BG="#46512a", MARK_BG="#7a4a12", SYN_KEYWORD="#f92672", SYN_STRING="#e6db74", SYN_NUMBER="#ae81ff",
+    SYN_COMMENT="#75715e", SYN_FUNC="#a6e22e", SYN_DECOR="#66d9ef", SYN_BUILTIN="#66d9ef", SYN_TYPE="#66d9ef", SYN_TAG="#f92672",
+    SYN_ATTR="#a6e22e", SYN_KEY="#66d9ef", SYN_LITERAL="#ae81ff", SYN_OP="#f8f8f2")
+_SOLAR_DARK = _variant(
+    _DARK, BG="#00212b", PANEL="#002b36", EDITOR="#002b36", PANEL2="#073642", FIELD="#00252f", BORDER="#0a4250", BORDER2="#1b5766",
+    TEXT="#93a1a1", MUTED="#839496", FAINT="#586e75", ACCENT="#2aa198", ACCENT_HOVER="#3dbab0", ON_ACCENT="#002b36",
+    ACCENT_BG="#07424a", RED="#dc322f", BLUE="#268bd2", ORANGE="#cb4b16", HOVER="#0a3a46", SELECTED="#0d4654", LINE_HL="#06323e",
+    SEL_BG="#164f5d", SMART_BG="#1a5a5e", MARK_BG="#7a4a12", SYN_KEYWORD="#859900", SYN_STRING="#2aa198", SYN_NUMBER="#d33682",
+    SYN_COMMENT="#586e75", SYN_FUNC="#268bd2", SYN_DECOR="#6c71c4", SYN_BUILTIN="#b58900", SYN_TYPE="#b58900", SYN_TAG="#268bd2",
+    SYN_ATTR="#93a1a1", SYN_KEY="#268bd2", SYN_LITERAL="#cb4b16", SYN_OP="#839496")
+_SOLAR_LIGHT = _variant(
+    _LIGHT, BG="#eee8d5", PANEL="#f5efdc", EDITOR="#fdf6e3", PANEL2="#e9e2cc", FIELD="#fdf6e3", BORDER="#ddd6c1", BORDER2="#c9c1a9",
+    TEXT="#586e75", MUTED="#657b83", FAINT="#93a1a1", ACCENT="#2aa198", ACCENT_HOVER="#1f8a82", ON_ACCENT="#fdf6e3", ACCENT_BG="#d9ece6",
+    RED="#dc322f", BLUE="#268bd2", ORANGE="#cb4b16", HOVER="#e6dfc8", SELECTED="#dcd5bd", LINE_HL="#f2ebd4", SEL_BG="#d5e6dd",
+    SMART_BG="#dbe8cf", MARK_BG="#ffd9a1", SYN_KEYWORD="#859900", SYN_STRING="#2aa198", SYN_NUMBER="#d33682", SYN_COMMENT="#93a1a1",
+    SYN_FUNC="#268bd2", SYN_DECOR="#6c71c4", SYN_BUILTIN="#b58900", SYN_TYPE="#b58900", SYN_TAG="#268bd2", SYN_ATTR="#657b83",
+    SYN_KEY="#268bd2", SYN_LITERAL="#cb4b16", SYN_OP="#657b83")
+_CONTRAST = _variant(
+    _DARK, BG="#000000", PANEL="#000000", EDITOR="#000000", PANEL2="#0d0d0d", FIELD="#000000", BORDER="#6b6b6b", BORDER2="#9a9a9a",
+    TEXT="#ffffff", MUTED="#e0e0e0", FAINT="#b0b0b0", ACCENT="#ffd400", ACCENT_HOVER="#ffe45c", ON_ACCENT="#000000", ACCENT_BG="#3a3000",
+    RED="#ff6b6b", BLUE="#6cb6ff", ORANGE="#ffb347", HOVER="#1f1f1f", SELECTED="#2e2e2e", LINE_HL="#141414", SEL_BG="#0b4f8a",
+    SMART_BG="#4d4400", MARK_BG="#8a5a00", MARK_FG="#ffffff", SYN_KEYWORD="#ffb347", SYN_STRING="#7dff9b", SYN_NUMBER="#6cb6ff",
+    SYN_COMMENT="#b0b0b0", SYN_FUNC="#ffe45c", SYN_DECOR="#d8b4ff", SYN_BUILTIN="#8be9fd", SYN_TYPE="#ffe45c", SYN_TAG="#ffb347",
+    SYN_ATTR="#ffe45c", SYN_KEY="#8be9fd", SYN_LITERAL="#d8b4ff", SYN_OP="#ffffff")
+PALETTES = {"Dark": _DARK, "Light": _LIGHT, "Monokai": _MONOKAI, "Solarized Dark": _SOLAR_DARK, "Solarized Light": _SOLAR_LIGHT,
+            "High Contrast": _CONTRAST}
 THEME_CHOICES = list(PALETTES)
 THEME_NAME = "Dark"
 
@@ -75,8 +111,13 @@ def ui_family():
     return _families.get("ui", "Segoe UI")
 
 
+def set_mono_family(name):
+    """A font chosen in Preferences (empty = the bundled JetBrains Mono)."""
+    _families["mono_choice"] = name if name and name in set(QFontDatabase.families()) else ""
+
+
 def mono_family():
-    return _families.get("mono", "Consolas")
+    return _families.get("mono_choice") or _families.get("mono", "Consolas")
 
 
 def mono(size=11):

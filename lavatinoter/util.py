@@ -92,6 +92,8 @@ DEFAULTS = {
     "autocorrect": True,
     "autocomplete": True,
     "autoclose": True,
+    "font_family": "",
+    "file_prefs": {},
     "plugins_enabled": False,
     "indent_guides": True,
 }

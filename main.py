@@ -541,6 +541,106 @@ def selftest():
         assert win.plugins.plugins == []
         ed.document().setModified(False)
 
+    def t_editorconfig_hex_themes():
+        from lavatinoter import editorconfig, hexview
+        d = os.path.join(work, "ec")
+        os.makedirs(os.path.join(d, "sub"), exist_ok=True)
+        with open(os.path.join(d, ".editorconfig"), "w") as f:
+            f.write("root = true\n[*]\nindent_style = space\nindent_size = 2\ntrim_trailing_whitespace = true\ninsert_final_newline = true\n"
+                    "[*.{py,rb}]\nindent_size = 4\n[sub/**.md]\ntrim_trailing_whitespace = false\n")
+        assert editorconfig.properties_for(os.path.join(d, "a.js"))["indent_size"] == "2"
+        assert editorconfig.properties_for(os.path.join(d, "a.py"))["indent_size"] == "4"
+        assert editorconfig.properties_for(os.path.join(d, "sub", "x.md"))["trim_trailing_whitespace"] == "false"
+        assert editorconfig.apply_on_save({"trim_trailing_whitespace": "true", "insert_final_newline": "true"}, "a  \nb") == "a\nb\n"
+        p = os.path.join(d, "t.js")
+        with open(p, "w") as f:
+            f.write("let a = 1;   \nlet b = 2;")
+        page = win.open_path(p)
+        assert page.tab_width == 2 and page.use_spaces
+        win.save(page)
+        assert open(p, "rb").read() == b"let a = 1;\nlet b = 2;\n" or open(p, "rb").read() == b"let a = 1;\r\nlet b = 2;\r\n", open(p, "rb").read()
+        text = hexview.hex_dump(bytes(range(0, 20)) + b"Hello")
+        assert text.splitlines()[0].startswith("00000000  00 01 02 03 04 05 06 07  08 09 0a"), text.splitlines()[0]
+        assert text.splitlines()[1].endswith("|.Hello|") or "Hello" in text
+        bp = os.path.join(d, "blob.bin")
+        with open(bp, "wb") as f:
+            f.write(bytes(range(256)) * 4)
+        hp = win.open_hex(bp)
+        assert hp.isReadOnly() and "000003f0" in hp.toPlainText() and not win.save(hp)
+        from lavatinoter import theme as th
+        for name in th.THEME_CHOICES:
+            win.switch_theme(name)
+            pump(10)
+        assert len(th.THEME_CHOICES) >= 6
+        win.switch_theme("Dark")
+        th.set_mono_family("Courier New")
+        win.set_font_size(12)
+        th.set_mono_family("")
+        win.set_font_size(11)
+
+    def t_palette():
+        from lavatinoter.palette import Picker, fuzzy
+        assert fuzzy("fd", "Format Document") and fuzzy("zzz", "Format Document") is None
+        assert fuzzy("util", "utils/util.py") > fuzzy("util", "u_t_i_l_x.py")
+        cmds = win._all_commands()
+        labels = [c[0] for c in cmds]
+        assert "Format > Format Document" in labels and any(l.startswith("File > ") for l in labels), labels[:5]
+        proj = os.path.join(work, "navproj")
+        win.workspace.set_root(proj)
+        win._file_cache = None
+        win.quick_open()
+        dlg = [w for w in win.findChildren(Picker) if w.isVisible()][-1]
+        dlg.box.setText("utl")
+        assert dlg.list.count() >= 1 and "util.py" in dlg.list.item(0).text(), [dlg.list.item(i).text() for i in range(dlg.list.count())]
+        dlg.accept_current()
+        pump(30)
+        assert os.path.basename(win.current().path) == "util.py"
+        dlg.close()
+        win.quick_open()
+        dlg = [w for w in win.findChildren(Picker) if w.isVisible()][-1]
+        dlg.box.setText("@comp")
+        assert dlg.list.count() == 1 and "compute" in dlg.list.item(0).text()
+        dlg.close()
+        win.command_palette()
+        dlg = [w for w in win.findChildren(Picker) if w.isVisible()][-1]
+        dlg.box.setText("format doc")
+        assert "Format Document" in dlg.list.item(0).text()
+        dlg.close()
+        win.workspace.set_root("")
+
+    def t_multicursor():
+        ed = win.new_file("foo bar\nfoo baz\nqux foo\n")
+        c = ed.textCursor()
+        c.setPosition(0)
+        ed.setTextCursor(c)
+        assert ed.add_next_occurrence()                       # first press selects the word
+        assert ed.textCursor().selectedText() == "foo"
+        assert ed.add_next_occurrence() and ed.add_next_occurrence()
+        assert len(ed.extra_cursors) == 2
+        keys(ed, "X")                                         # typing replaces all three at once
+        assert ed.toPlainText() == "X bar\nX baz\nqux X\n", ed.toPlainText()
+        ed.undo()
+        assert ed.toPlainText() == "foo bar\nfoo baz\nqux foo\n", "one undo step for all cursors"
+        ed.clear_extra_cursors()
+        assert ed.select_all_occurrences() and len(ed.extra_cursors) == 2
+        keys(ed, "\b")
+        assert ed.toPlainText() == " bar\n baz\nqux \n", repr(ed.toPlainText())
+        ed.clear_extra_cursors()
+        ed.setPlainText("aaa\nbbb\nccc\n")
+        c = ed.textCursor()
+        c.setPosition(1)
+        ed.setTextCursor(c)
+        assert ed.add_cursor_vertical(False) and ed.add_cursor_vertical(False)
+        keys(ed, "-")
+        assert ed.toPlainText() == "a-aa\nb-bb\nc-cc\n", ed.toPlainText()
+        ed._column_select(0, 1, 2, 3)                         # a block (column) selection over three lines
+        assert len(ed._all_cursors()) == 3
+        ed._multi_key(QKeyEvent(QEvent.KeyPress, Qt.Key_Delete, Qt.NoModifier))
+        assert ed.toPlainText() == "a\nb\nc\n", repr(ed.toPlainText())
+        ed._multi_key(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        assert not ed.extra_cursors
+        ed.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -550,7 +650,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

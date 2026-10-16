@@ -11,12 +11,13 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBo
                                QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
                                QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget, QComboBox, QLineEdit)
 
-from . import APP_NAME, VERSION, formatter, plugins, session, symbols, theme, util
+from . import APP_NAME, VERSION, editorconfig, formatter, hexview, plugins, session, symbols, theme, util
 from .editor import CodeEditor
 from .finddialog import FindDialog
 from .highlighter import LANGS, PLAIN, lang_by_name, lang_for_path
 from .largefile import GoToPanel, LargeFileView
 from . import search
+from .palette import Picker, fuzzy
 from .panels import FunctionsPanel, ImagePreview, ImagesPanel, MinimapWidget, ResultsPanel, WorkspacePanel, reveal_in_explorer
 
 MB = 1024 * 1024
@@ -33,6 +34,12 @@ class PreferencesDialog(QDialog):
         self.theme = QComboBox()
         self.theme.addItems(theme.THEME_CHOICES)
         self.theme.setCurrentText(settings["theme"])
+        from PySide6.QtGui import QFontDatabase
+        self.family = QComboBox()
+        self.family.addItem("Default (JetBrains Mono)", "")
+        for fam in sorted(f for f in QFontDatabase.families() if QFontDatabase.isFixedPitch(f) and not f.startswith("@")):
+            self.family.addItem(fam, fam)
+        self.family.setCurrentIndex(max(0, self.family.findData(settings["font_family"])))
         self.size = QSpinBox()
         self.size.setRange(6, 40)
         self.size.setValue(settings["font_size"])
@@ -51,6 +58,7 @@ class PreferencesDialog(QDialog):
         self.restore.setChecked(settings["restore_session"])
         form.addRow("Theme", self.theme)
         form.addRow("Editor font size", self.size)
+        form.addRow("Editor font", self.family)
         form.addRow("Tab width", self.tab)
         form.addRow("", self.spaces)
         form.addRow("Open files larger than", self.large)
@@ -69,6 +77,7 @@ class PreferencesDialog(QDialog):
     def apply_to(self, s):
         s["theme"] = self.theme.currentText()
         s["font_size"] = self.size.value()
+        s["font_family"] = self.family.currentData() or ""
         s["tab_width"] = self.tab.value()
         s["use_spaces"] = self.spaces.isChecked()
         s["large_file_mb"] = self.large.value()
@@ -216,6 +225,7 @@ class MainWindow(QMainWindow):
         self.a_close_all = A("Close All", self.close_all, "Ctrl+Shift+W")
         self.a_reload = A("Reload from Disk", self.reload_current, "Ctrl+Shift+R")
         self.a_reveal = A("Show in Explorer", self.reveal_current)
+        self.a_hex = A("View as Hex", self.hex_current)
         self.a_copy_path = A("Copy Full Path", self.copy_path)
         self.a_exit = A("Exit", self.close, "Alt+F4")
 
@@ -268,6 +278,13 @@ class MainWindow(QMainWindow):
         self.a_refs = A("Find All References", self.find_references, "Shift+F12")
         self.a_symbol = A("Go to Symbol in File...", self.go_to_symbol, "Ctrl+R")
         self.a_back = A("Navigate Back", self.nav_back, "Alt+Left")
+        self.a_palette = A("Command Palette...", self.command_palette, "Ctrl+Shift+P", None,
+                           tip="Type to run any command. In Quick Open, start with > for commands, : for a line, @ for a symbol")
+        self.a_quick = A("Quick Open File...", self.quick_open, "Ctrl+P")
+        self.a_next_occ = A("Add Next Occurrence", lambda: self._ed_call("add_next_occurrence"), "Ctrl+Alt+D")
+        self.a_all_occ = A("Select All Occurrences", lambda: self._ed_call("select_all_occurrences"), "Ctrl+Shift+L")
+        self.a_cursor_up = A("Add Cursor Above", lambda: self._ed_call("add_cursor_vertical", True), "Alt+Shift+Up")
+        self.a_cursor_down = A("Add Cursor Below", lambda: self._ed_call("add_cursor_vertical", False), "Alt+Shift+Down")
         self.a_find = A("Find...", lambda: self.find_dialog.show_tab(0, self._selected_text()), S.Find, "find", tip="Find (Ctrl+F)")
         self.a_replace = A("Replace...", lambda: self.find_dialog.show_tab(1, self._selected_text()), "Ctrl+H", "replace", tip="Replace (Ctrl+H)")
         self.a_find_files = A("Find in Files...", lambda: self.find_dialog.show_tab(2, self._selected_text()), "Ctrl+Shift+F")
@@ -320,6 +337,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addAction(self.a_reveal)
         m.addAction(self.a_copy_path)
+        m.addAction(self.a_hex)
         m.addSeparator()
         m.addAction(self.a_close)
         m.addAction(self.a_close_all)
@@ -337,6 +355,10 @@ class MainWindow(QMainWindow):
         ln = m.addMenu("Line Operations")
         for a in (self.a_sort_asc, self.a_sort_desc, self.a_unique, self.a_blank, self.a_trim):
             ln.addAction(a)
+        mc = m.addMenu("Multiple Cursors")
+        for a in (self.a_next_occ, self.a_all_occ, self.a_cursor_up, self.a_cursor_down):
+            mc.addAction(a)
+        mc.addAction("Alt+click adds a cursor, Alt+Shift+drag selects a column, Esc leaves").setEnabled(False)
         bm = m.addMenu("Bookmarks")
         for a in (self.a_bm_toggle, self.a_bm_next, self.a_bm_prev, self.a_bm_clear):
             bm.addAction(a)
@@ -366,6 +388,9 @@ class MainWindow(QMainWindow):
         m.addAction("About formatting marks", self._format_help)
 
         m = mb.addMenu("Search")
+        m.addAction(self.a_palette)
+        m.addAction(self.a_quick)
+        m.addSeparator()
         for a in (self.a_find, self.a_find_next, self.a_find_prev, self.a_replace, self.a_find_files, self.a_mark, None,
                   self.a_goto, self.a_goto_def, self.a_refs, self.a_symbol, self.a_back, self.a_bracket, self.a_select_in):
             m.addSeparator() if a is None else m.addAction(a)
@@ -733,10 +758,16 @@ class MainWindow(QMainWindow):
         text, enc, eol, binary = util.read_text_file(path)
         if binary:
             QApplication.restoreOverrideCursor()
-            r = QMessageBox.question(self, APP_NAME, f'"{os.path.basename(path)}" looks like a binary file. Open it as text anyway?',
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            box = QMessageBox(QMessageBox.Question, APP_NAME, f'"{os.path.basename(path)}" looks like a binary file.')
+            hexb = box.addButton("Open as hex", QMessageBox.AcceptRole)
+            txtb = box.addButton("Open as text", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Cancel)
+            box.setDefaultButton(hexb)
+            box.exec()
             QApplication.setOverrideCursor(Qt.WaitCursor)
-            if r != QMessageBox.Yes:
+            if box.clickedButton() is hexb:
+                return self.open_hex(path)
+            if box.clickedButton() is not txtb:
                 return None
         ed = self._make_editor()
         ed.path = path
@@ -746,8 +777,41 @@ class MainWindow(QMainWindow):
         ed.document().setModified(False)
         ed.document().clearUndoRedo() if hasattr(ed.document(), "clearUndoRedo") else None
         ed.detect_language()
+        self._apply_file_settings(ed)
         ed.moveCursor(QTextCursor.Start)
         return self._add_page(ed)
+
+    def _apply_file_settings(self, ed):
+        """Per-file choices: .editorconfig first, then what you set for this file last time (word wrap)."""
+        ed.config = editorconfig.properties_for(ed.path) if ed.path else {}
+        c = ed.config
+        if c.get("indent_style") in ("space", "tab"):
+            ed.use_spaces = c["indent_style"] == "space"
+        size = c.get("indent_size") if c.get("indent_size", "").isdigit() else c.get("tab_width")
+        if size and size.isdigit() and 1 <= int(size) <= 16:
+            ed.set_tab_width(int(size))
+        prefs = self.settings["file_prefs"].get(os.path.normcase(ed.path or ""), {})
+        if "wrap" in prefs:
+            ed.set_word_wrap(prefs["wrap"])
+
+    def open_hex(self, path):
+        text, shown, size = hexview.read_hex(path)
+        ed = self._make_editor()
+        ed.title = os.path.basename(path) + " (hex)"
+        ed.setPlainText(text)
+        ed.setReadOnly(True)
+        ed.is_hex = True
+        ed.set_language(PLAIN)
+        ed.document().setModified(False)
+        page = self._add_page(ed)
+        if shown < size:
+            self.flash(f"Showing the first {util.human_size(shown)} of {util.human_size(size)}")
+        return page
+
+    def hex_current(self):
+        page = self.current()
+        if page is not None and page.path and os.path.isfile(page.path):
+            self.open_hex(page.path)
 
     def _open_large(self, path):
         view = LargeFileView(path, self.settings["large_file_mb"])
@@ -825,6 +889,9 @@ class MainWindow(QMainWindow):
             return False
         if page is None:
             return False
+        if getattr(page, "is_hex", False):
+            self.flash("A hex view is read-only.")
+            return False
         if not page.path:
             return self.save_as(page)
         return self._write(page, page.path)
@@ -848,6 +915,11 @@ class MainWindow(QMainWindow):
 
     def _write(self, page, path):
         text = page.toPlainText()
+        cfg = getattr(page, "config", None) or {}
+        fixed = editorconfig.apply_on_save(cfg, text) if cfg else text
+        if fixed != text:
+            page.replace_document_text(fixed)
+            text = fixed
         try:
             try:
                 util.write_text_file(path, text, page.encoding, page.eol, "strict")
@@ -1157,6 +1229,107 @@ class MainWindow(QMainWindow):
         key, line = self._nav.pop()
         self.open_hit(key, line, 0, 0)
 
+    # ---- command palette and quick open ---------------------------------------------------------------------------
+    def _all_commands(self):
+        """[(label, shortcut, QAction)] for every enabled menu command, plus plugin commands."""
+        out, seen = [], set()
+
+        def walk(menu, trail):
+            for a in menu.actions():
+                if a.isSeparator():
+                    continue
+                text = a.text().replace("&", "")
+                if a.menu() is not None:
+                    walk(a.menu(), trail + [text])
+                elif a.isEnabled() and text and id(a) not in seen:
+                    seen.add(id(a))
+                    out.append((" > ".join(trail + [text]), a.shortcut().toString(), a))
+        for top in self.menuBar().actions():
+            if top.menu() is not None and top.text().replace("&", "") not in ("Window",):
+                walk(top.menu(), [top.text().replace("&", "")])
+        for a in self._plugin_actions:
+            if id(a) not in seen:
+                out.append(("Plugins > " + a.text(), a.shortcut().toString(), a))
+        return out
+
+    def command_palette(self, start=""):
+        cmds = self._all_commands()
+
+        def items(q):
+            return [(label, sc, act) for label, sc, act in cmds]
+        d = Picker(self, "Command Palette", "Type a command...", items)
+        d.chosen.connect(lambda act: act.trigger())
+        d.box.setText(start)
+        d.show()
+
+    def _workspace_files(self):
+        import time as _t
+        root = self.workspace.root or (os.path.dirname(self.current().path) if self.current() is not None and self.current().path else "")
+        cache = getattr(self, "_file_cache", None)
+        if cache and cache[0] == root and _t.time() - cache[1] < 30:
+            return cache[2]
+        files = []
+        if root and os.path.isdir(root):
+            for i, p in enumerate(search.iter_files(root, "*", True, True)):
+                if i >= 30000:
+                    break
+                files.append(os.path.relpath(p, root))
+        self._file_cache = (root, _t.time(), files, root)
+        return files
+
+    def quick_open(self):
+        root = getattr(self, "_file_cache", (None, 0, [], ""))[3] if getattr(self, "_file_cache", None) else ""
+
+        def items(q):
+            if q.startswith(">"):
+                return None
+            if q.startswith(":"):
+                return []
+            if q.startswith("@"):
+                page = self.current()
+                ed = self.editor_of(page)
+                if ed is None or page.is_large:
+                    return []
+                name = q[1:].strip()
+                syms = symbols.symbols_in_text(ed.lang, ed.toPlainText())
+                return [(n, f"line {ln}", ("line", ln), True) for n, ln, _t in syms if fuzzy(name, n) is not None]
+            rows = [(("\u25cf " if False else "") + self.tab_title(p), os.path.dirname(p.path) if p.path else "(unsaved)", ("tab", p)) for p in self.all_tabs()]
+            base = self._file_cache[3] if getattr(self, "_file_cache", None) else ""
+            rows += [(os.path.basename(f), os.path.dirname(f), ("file", os.path.join(base, f))) for f in self._workspace_files()]
+            return rows
+        self._workspace_files()
+        d = Picker(self, "Quick Open", "Go to file...   (: line   @ symbol   > command)", items)
+
+        def on_text(q):
+            if q.startswith(">"):
+                d.reject()
+                QTimer.singleShot(0, lambda: self.command_palette(q[1:]))
+        d.box.textChanged.connect(on_text)
+
+        def chosen(payload):
+            kind, val = payload
+            if kind == "tab":
+                self.tabs.setCurrentWidget(val)
+            elif kind == "file":
+                self.open_path(val)
+            elif kind == "line":
+                self._nav_push()
+                self._jump_line(val)
+        d.chosen.connect(chosen)
+        orig = d.accept_current
+
+        def accept_current():
+            q = d.box.text()
+            if q.startswith(":") and q[1:].strip().isdigit():          # ":120" jumps to line 120
+                d.accept()
+                self._nav_push()
+                self._jump_line(int(q[1:]))
+                return
+            orig()
+        d.box.returnPressed.disconnect()
+        d.box.returnPressed.connect(accept_current)
+        d.show()
+
     def _project_root(self):
         page = self.current()
         return self.workspace.root or (os.path.dirname(page.path) if page is not None and page.path else "")
@@ -1400,6 +1573,9 @@ class MainWindow(QMainWindow):
 
     def set_wrap(self, on):
         self.settings["word_wrap"] = on
+        page = self.current()
+        if page is not None and page.path:                      # remembered for this file next time
+            self.settings["file_prefs"].setdefault(os.path.normcase(page.path), {})["wrap"] = on
         for p in self.all_tabs():
             self.editor_of(p).set_word_wrap(on)
 
@@ -1446,6 +1622,7 @@ class MainWindow(QMainWindow):
             return
         d.apply_to(self.settings)
         self.settings.save()
+        theme.set_mono_family(self.settings["font_family"])
         if self.settings["theme"] != theme.THEME_NAME:
             self._apply_theme(self.settings["theme"])
         for p in self.all_tabs():
@@ -1561,7 +1738,8 @@ class MainWindow(QMainWindow):
         sel_chars, sel_lines = page.selection_info()
         self.lbl_lang.setText(f"{page.lang.name} file" if page.lang is not PLAIN else "Normal text file")
         self.lbl_len.setText(f"length : {page.length():,}   lines : {page.blockCount():,}")
-        self.lbl_pos.setText(f"Ln : {cur.blockNumber() + 1:,}   Col : {cur.positionInBlock() + 1}   Sel : {sel_chars} | {sel_lines}")
+        self.lbl_pos.setText(f"Ln : {cur.blockNumber() + 1:,}   Col : {cur.positionInBlock() + 1}   Sel : {sel_chars} | {sel_lines}"
+                             + (f"   {len(page.extra_cursors) + 1} cursors" if page.extra_cursors else ""))
         self.lbl_eol.setText({"\r\n": "Windows (CR LF)", "\n": "Unix (LF)", "\r": "Old Mac (CR)"}[page.eol])
         self.lbl_enc.setText(page.encoding.replace("UTF-8 with BOM", "UTF-8 BOM"))
         self.lbl_mode.setText("OVR" if page.overwriteMode() else "INS")
