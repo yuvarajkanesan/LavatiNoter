@@ -725,6 +725,78 @@ def selftest():
         win._fill_macro_menu()
         ed.document().setModified(False)
 
+    def t_export():
+        from lavatinoter import export
+        from lavatinoter.highlighter import PYTHON
+        src = 'def hi(name):\n    return "hello " + name  # greet\n'
+        doc = export.styled_document(src, PYTHON)
+        fmts = [(f.start, f.length, f.format.foreground().color().name()) for f in doc.firstBlock().layout().formats()]
+        c = doc.firstBlock()
+        from PySide6.QtGui import QTextCursor
+        cur = QTextCursor(doc)
+        cur.setPosition(0)
+        cur.setPosition(3, QTextCursor.KeepAnchor)
+        kw = cur.charFormat().foreground().color().name()
+        assert kw != "#000000" and kw != "#d9dfeb", kw                     # the keyword colour of the Light palette is baked in
+        pdf = os.path.join(work, "out.pdf")
+        export.export_pdf(pdf, src * 40, PYTHON, "t")
+        data = open(pdf, "rb").read()
+        assert data.startswith(b"%PDF") and len(data) > 1500, len(data)
+        html = os.path.join(work, "out.html")
+        export.export_html(html, src, PYTHON, "t")
+        h = open(html, encoding="utf-8").read()
+        assert "hello" in h and "color:" in h and "<title>t</title>" in h
+        from lavatinoter import theme as th
+        assert th.THEME_NAME == "Dark", "the editor theme must be restored after exporting"
+
+    def t_tail_and_filter():
+        from lavatinoter import search
+        p = os.path.join(work, "grow.log")
+        with open(p, "w", newline="\n") as f:
+            for i in range(1, 40001):
+                f.write(f"line {i} {'ERROR' if i % 1000 == 0 else 'ok'} filler filler filler filler filler\n")
+        page = win.open_path(p)
+        assert page.is_large
+        for _ in range(300):
+            pump(20)
+            if page.indexing_done:
+                break
+        assert page.indexing_done and page.total_lines() == 40001
+        before = page.size
+        with open(p, "a", newline="\n") as f:                              # the file grows while it is open
+            for i in range(40001, 50001):
+                f.write(f"line {i} {'ERROR' if i % 1000 == 0 else 'ok'} filler filler filler filler filler\n")
+        page.set_follow(True)
+        assert page.size > before
+        for _ in range(300):
+            pump(20)
+            if page.indexing_done:
+                break
+        assert page.indexing_done and page.total_lines() == 50001, page.total_lines()
+        assert page.top_line > 49900, page.top_line                       # follow mode shows the end
+        assert "line 50000" in page.editor.toPlainText()
+        page.set_follow(False)
+        # filter: the matching lines open in a new tab
+        got = []
+        page.copyRequested.connect(lambda text, title: got.append((text, title)))
+        page.run_filter(search.compile_pattern(search.Options(text="ERROR", match_case=True)), False, "ERROR")
+        for _ in range(300):
+            pump(20)
+            if got:
+                break
+        text, title = got[0]
+        lines = text.strip().split("\n")
+        assert len(lines) == 50 and lines[0].startswith("1000: line 1000 ERROR") and lines[-1].startswith("50000: "), (len(lines), lines[:2])
+        assert "50 lines" in title
+        got.clear()
+        page.run_filter(search.compile_pattern(search.Options(text="ok", match_case=True)), True, "ok")
+        for _ in range(300):
+            pump(20)
+            if got:
+                break
+        assert len(got[0][0].strip().split("\n")) == 50
+        win.close_tab(page, force=True)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -734,7 +806,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

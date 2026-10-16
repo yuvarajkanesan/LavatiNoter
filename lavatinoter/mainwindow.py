@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBo
                                QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
                                QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget, QComboBox, QLineEdit)
 
-from . import runner
+from . import export, runner
 from . import APP_NAME, VERSION, diffview, editorconfig, formatter, gitinfo, hexview, plugins, session, symbols, theme, util
 from .editor import CodeEditor
 from .finddialog import FindDialog
@@ -313,6 +313,10 @@ class MainWindow(QMainWindow):
         self.a_play = A("Play Macro", self.macro_play, "Ctrl+Alt+P")
         self.a_play_n = A("Run Macro Multiple Times...", self.macro_play_many)
         self.a_save_macro = A("Save Current Macro...", self.macro_save)
+        self.a_print = A("Print...", self.print_doc, None, None, tip="Print with syntax colours on a white page")
+        self.a_preview = A("Print Preview...", lambda: self.print_doc(preview=True))
+        self.a_pdf = A("Export as PDF...", self.export_pdf)
+        self.a_html = A("Export as HTML...", self.export_html)
         self.a_find = A("Find...", lambda: self.find_dialog.show_tab(0, self._selected_text()), S.Find, "find", tip="Find (Ctrl+F)")
         self.a_replace = A("Replace...", lambda: self.find_dialog.show_tab(1, self._selected_text()), "Ctrl+H", "replace", tip="Replace (Ctrl+H)")
         self.a_find_files = A("Find in Files...", lambda: self.find_dialog.show_tab(2, self._selected_text()), "Ctrl+Shift+F")
@@ -366,6 +370,9 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_reveal)
         m.addAction(self.a_copy_path)
         m.addAction(self.a_hex)
+        m.addSeparator()
+        for a in (self.a_print, self.a_preview, self.a_pdf, self.a_html):
+            m.addAction(a)
         m.addSeparator()
         m.addAction(self.a_close)
         m.addAction(self.a_close_all)
@@ -1678,6 +1685,57 @@ class MainWindow(QMainWindow):
     def _delete_macro(self, name):
         self.settings["macros"] = [x for x in self.settings["macros"] if x["name"] != name]
         self.settings.save()
+
+    # ---- print and export ------------------------------------------------------------------------------------------------
+    def _export_source(self):
+        page = self.current()
+        ed = self.editor_of(page)
+        if ed is None or page.is_large:
+            self.flash("Printing and export work on normal (editable) documents.")
+            return None
+        sel = ed.textCursor().selectedText().replace("\u2029", "\n") if ed.textCursor().hasSelection() else ""
+        return (sel or ed.toPlainText()), ed.lang, self.tab_title(page)
+
+    def print_doc(self, preview=False):
+        src = self._export_source()
+        if src is None:
+            return
+        text, lang, title = src
+        from PySide6.QtPrintSupport import QPrintDialog, QPrintPreviewDialog
+        doc = export.styled_document(text, lang, self.settings["font_size"] - 1)
+        pr = export.make_printer()
+        pr.setDocName(title)
+        if preview:
+            dlg = QPrintPreviewDialog(pr, self)
+            dlg.paintRequested.connect(lambda printer: doc.print_(printer))
+            dlg.resize(900, 700)
+            dlg.exec()
+        else:
+            dlg = QPrintDialog(pr, self)
+            if dlg.exec() == QDialog.Accepted:
+                doc.print_(pr)
+
+    def export_pdf(self):
+        src = self._export_source()
+        if src is None:
+            return
+        text, lang, title = src
+        start = os.path.splitext(self.current().path or os.path.join(self.default_directory(), title))[0] + ".pdf"
+        path, _ = QFileDialog.getSaveFileName(self, "Export as PDF", start, "PDF (*.pdf)")
+        if path:
+            export.export_pdf(path, text, lang, title, self.settings["font_size"] - 1)
+            self.flash(f"Exported {os.path.basename(path)}")
+
+    def export_html(self):
+        src = self._export_source()
+        if src is None:
+            return
+        text, lang, title = src
+        start = os.path.splitext(self.current().path or os.path.join(self.default_directory(), title))[0] + ".html"
+        path, _ = QFileDialog.getSaveFileName(self, "Export as HTML", start, "HTML (*.html)")
+        if path:
+            export.export_html(path, text, lang, title)
+            self.flash(f"Exported {os.path.basename(path)}")
 
     def _project_root(self):
         page = self.current()

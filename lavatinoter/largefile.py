@@ -13,7 +13,7 @@ from array import array
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QCursor, QTextCursor
-from PySide6.QtWidgets import (QToolTip, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QMessageBox, QToolTip, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QProgressBar, QPushButton, QScrollBar, QSpinBox, QVBoxLayout, QWidget)
 
 from . import theme, util
@@ -31,12 +31,13 @@ class Indexer(QThread):
     progress = Signal(int, int)             # newlines so far, bytes so far
     finished_ok = Signal(int)               # total newlines
 
-    def __init__(self, path, cum, parent=None):
+    def __init__(self, path, cum, parent=None, start_block=0, start_lines=0):
         super().__init__(parent)
         self.path = path
         self.cum = cum
-        self.lines = 0
-        self.done_bytes = 0
+        self.start_block = start_block
+        self.lines = start_lines
+        self.done_bytes = start_block * BLOCK
         self._run = threading.Event()
         self._run.set()
         self._stop = False
@@ -54,6 +55,7 @@ class Indexer(QThread):
     def run(self):
         try:
             with open(self.path, "rb", buffering=0) as f:
+                f.seek(self.start_block * BLOCK)
                 n = 0
                 while True:
                     self._run.wait()
@@ -127,6 +129,77 @@ class ByteSearch(QThread):
             self.found.emit(*r)
         else:
             self.missing.emit()
+
+
+class LineFilter(QThread):
+    """Collects the lines that match a regex ('grep'), streaming through the file in chunks. Output: 'lineno: text' lines."""
+    done = Signal(str, int, bool)           # text, matching lines, truncated
+    progress = Signal(float)
+
+    CHUNK = 16 * 1024 * 1024
+    MAX_LINES = 200_000
+    MAX_BYTES = 64 * 1024 * 1024
+
+    def __init__(self, path, rx, invert=False, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self.rx = re.compile(rb"^[^\n]*?(?:" + rx.pattern.encode("utf-8") + rb")[^\n]*$", (rx.flags & ~re.UNICODE) | re.M)
+        self.invert = invert
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        out, out_bytes, count, lineno, truncated = [], 0, 0, 1, False
+        try:
+            size = os.path.getsize(self.path)
+            with open(self.path, "rb") as f:
+                carry, read = b"", 0
+                while not self._cancel and not truncated:
+                    block = f.read(self.CHUNK)
+                    last = not block
+                    data = carry + block
+                    if not last:
+                        cut = data.rfind(b"\n")
+                        if cut < 0:
+                            carry = data
+                            continue
+                        data, carry = data[:cut + 1], data[cut + 1:]
+                    read += len(block)
+                    pos, ln = 0, lineno
+                    if self.invert:
+                        rows = data.split(b"\n")
+                        if data.endswith(b"\n") or not data:
+                            rows.pop()                                # the empty piece after the last newline is not a line
+                        for line in rows:
+                            if not self.rx.search(line):
+                                if count >= self.MAX_LINES or out_bytes > self.MAX_BYTES:
+                                    truncated = True
+                                    break
+                                txt = line.decode("utf-8", "replace").rstrip("\r")
+                                out.append(f"{ln}: {txt}")
+                                out_bytes += len(txt) + 12
+                                count += 1
+                            ln += 1
+                    else:
+                        for m in self.rx.finditer(data):
+                            ln += data.count(b"\n", pos, m.start())
+                            pos = m.start()
+                            if count >= self.MAX_LINES or out_bytes > self.MAX_BYTES:
+                                truncated = True
+                                break
+                            txt = m.group().decode("utf-8", "replace").rstrip("\r")
+                            out.append(f"{ln}: {txt}")
+                            out_bytes += len(txt) + 12
+                            count += 1
+                    lineno += data.count(b"\n")
+                    self.progress.emit(min(1.0, read / max(1, size)))
+                    if last:
+                        break
+        except OSError:
+            pass
+        self.done.emit("\n".join(out) + ("\n" if out else ""), count, truncated)
 
 
 class GoToPanel(QFrame):
@@ -302,6 +375,15 @@ class LargeFileView(QWidget):
         self.pause_btn = QPushButton("Pause indexing")
         self.pause_btn.clicked.connect(self.toggle_pause)
         bl.addWidget(self.pause_btn)
+        self.follow_btn = QPushButton("Follow")
+        self.follow_btn.setCheckable(True)
+        self.follow_btn.setToolTip("Keep the end of the file in view as it grows (like tail -f)")
+        self.follow_btn.toggled.connect(self.set_follow)
+        bl.addWidget(self.follow_btn)
+        self.filter_btn = QPushButton("Filter lines...")
+        self.filter_btn.setToolTip("Open the lines that contain some text (or match a regular expression) in a new tab")
+        self.filter_btn.clicked.connect(self.filter_dialog)
+        bl.addWidget(self.filter_btn)
         self.copy_btn = QPushButton("Make editable copy...")
         self.copy_btn.setProperty("primary", True)
         self.copy_btn.clicked.connect(self.make_copy_dialog)
@@ -322,6 +404,11 @@ class LargeFileView(QWidget):
         self.goto = GoToPanel(self)
         self.goto.requested.connect(self._goto_requested)
 
+        self.following = False
+        self._grow_timer = QTimer(self, interval=800)
+        self._grow_timer.timeout.connect(self.refresh_growth)
+        self._grow_timer.start()
+        self._filter = None
         self.indexer = Indexer(path, self.cum, self)
         self.indexer.progress.connect(self._on_progress)
         self.indexer.finished_ok.connect(self._on_indexed)
@@ -332,7 +419,120 @@ class LargeFileView(QWidget):
         QTimer.singleShot(0, self.show_window)
 
     # ---- lifecycle ---------------------------------------------------------------------------------------------
+    # ---- growing files: follow, re-index ------------------------------------------------------------------------------
+    def set_follow(self, on):
+        self.following = on
+        if on:
+            self.refresh_growth()
+            self.scroll_to_end()
+
+    def scroll_to_end(self):
+        self.scroll_to_offset(self.size)
+        self.scroll_lines(-max(1, self.visible_rows() - 2))
+
+    def refresh_growth(self):
+        """Notices that the file grew (or was truncated / rotated), re-maps it and indexes only the new part."""
+        try:
+            new_size = os.path.getsize(self.path)
+        except OSError:
+            return
+        if new_size == self.size:
+            return
+        shrunk = new_size < self.size
+        try:
+            self.mm.close()
+            self._file.close()
+            self._file = open(self.path, "rb")
+            self.mm = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ) if new_size else None
+        except (OSError, ValueError):
+            return
+        self.size = new_size
+        if self.mm is None:
+            return
+        if shrunk:                                              # the file was replaced: start again
+            self.top = 0
+            self.indexer.stop()
+            self.indexer.wait(3000)
+            self.cum = array("Q")
+            self.indexing_done = False
+            self.indexer = Indexer(self.path, self.cum, self)
+            self.indexer.progress.connect(self._on_progress)
+            self.indexer.finished_ok.connect(self._on_indexed)
+            self.pause_btn.show()
+            self.indexer.start()
+        elif self.indexing_done and self.cum:
+            last = len(self.cum) - 1
+            lines_before = self.cum[last]
+            del self.cum[last:]
+            self.indexing_done = False
+            self.indexer = Indexer(self.path, self.cum, self, start_block=last, start_lines=lines_before)
+            self.indexer.progress.connect(self._on_progress)
+            self.indexer.finished_ok.connect(self._on_indexed)
+            self.indexer.start()
+        self.refresh_banner()
+        if self.following:
+            self.scroll_to_end()
+        else:
+            self.show_window()
+
+    # ---- filter ('grep') ------------------------------------------------------------------------------------------------------
+    def filter_dialog(self):
+        from PySide6.QtWidgets import QCheckBox
+        d = QDialog(self)
+        d.setWindowTitle("Filter lines")
+        d.setMinimumWidth(460)
+        form = QFormLayout(d)
+        box = QLineEdit()
+        box.setPlaceholderText("Text to look for, e.g. ERROR")
+        regex = QCheckBox("Regular expression")
+        case = QCheckBox("Match case")
+        invert = QCheckBox("Show the lines that do NOT match")
+        form.addRow("Lines containing", box)
+        form.addRow("", regex)
+        form.addRow("", case)
+        form.addRow("", invert)
+        note = QLabel("The matching lines open in a new tab as 'line number: text'. Up to 200,000 lines.")
+        note.setProperty("muted", True)
+        note.setWordWrap(True)
+        form.addRow(note)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        form.addRow(bb)
+        box.setFocus()
+        if d.exec() != QDialog.Accepted or not box.text():
+            return
+        from . import search
+        try:
+            rx = search.compile_pattern(search.Options(text=box.text(), mode=search.REGEX if regex.isChecked() else search.NORMAL,
+                                                       match_case=case.isChecked()))
+        except search.SearchError as e:
+            QMessageBox.warning(self, "Filter lines", str(e))
+            return
+        self.run_filter(rx, invert.isChecked(), box.text())
+
+    def run_filter(self, rx, invert=False, label=""):
+        if self._filter is not None and self._filter.isRunning():
+            self._filter.cancel()
+            self._filter.wait(2000)
+        t = LineFilter(self.path, rx, invert, self)
+        self._filter = t
+        self.index_label.setText("Filtering...")
+        t.progress.connect(lambda f: self.index_label.setText(f"Filtering {f * 100:.0f}%"))
+
+        def done(text, count, truncated):
+            self.index_label.setText(f"{count:,} lines matched" + (" (stopped at the limit)" if truncated else ""))
+            base = os.path.splitext(os.path.basename(self.path))
+            if count:
+                self.copyRequested.emit(text, f"{base[0]} - {'not ' if invert else ''}{label} ({count:,} lines){base[1]}")
+        t.done.connect(done)
+        t.start()
+
     def close_file(self):
+        self._grow_timer.stop()
+        if self._filter is not None and self._filter.isRunning():
+            self._filter.cancel()
+            self._filter.wait(2000)
         if self._searcher:
             self._searcher.cancel()
             self._searcher.wait(2000)
