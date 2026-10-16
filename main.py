@@ -386,9 +386,7 @@ def selftest():
         from lavatinoter.highlighter import PLAIN, PYTHON
         ed = win.new_file("")
         ed.set_language(PYTHON)
-        ed.setPlainText("def calculate_total(items):
-    return len(items)
-")
+        ed.setPlainText("def calculate_total(items):\n    return len(items)\n")
         assert ed.completion_candidates("calc") == ["calculate_total"]
         assert "import" in ed.completion_candidates("imp")
         c = ed.textCursor()
