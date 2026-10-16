@@ -255,6 +255,8 @@ class MainWindow(QMainWindow):
         self.a_bracket = A("Go to Matching Bracket", self.goto_bracket, "Ctrl+Shift+B")
 
         self.view_wrap = A("Word Wrap", self.set_wrap, None, "wrap", True, self.settings["word_wrap"], "Word wrap")
+        self.view_marks = A("Show Formatting Marks (** _ <u> ...)", self.set_show_marks, None, None, True, False,
+                            "Normally the marks behind bold, italic, underline and size are hidden")
         self.view_ws = A("Show Whitespace and Tabs", self.set_whitespace, None, "pilcrow", True, self.settings["show_whitespace"],
                          "Show whitespace and tabs")
         self.view_map = A("Panels on the Right (Map, Functions, Images)", self.toggle_map, None, "map", True, self.settings["show_minimap"],
@@ -340,7 +342,7 @@ class MainWindow(QMainWindow):
             m.addSeparator() if a is None else m.addAction(a)
 
         m = mb.addMenu("View")
-        for a in (self.view_wrap, self.view_ws, None, self.show_workspace, self.view_map, self.view_results, None,
+        for a in (self.view_wrap, self.view_ws, self.view_marks, None, self.show_workspace, self.view_map, self.view_results, None,
                   self.a_zoom_in, self.a_zoom_out, self.a_zoom_reset, None, self.a_full):
             m.addSeparator() if a is None else m.addAction(a)
 
@@ -1081,7 +1083,7 @@ class MainWindow(QMainWindow):
 
     def _format_help(self):
         QMessageBox.information(self, "Formatting marks", "Bold, italic, underline and text size are stored as marks in the text, "
-                                "so the file stays plain text:\n\n  **bold**   *italic*   <u>underline</u>\n  <span style=\"font-size:24px\">size</span>"
+                                "so the file stays plain text. The editor hides the marks and just shows the formatting (View > Show Formatting Marks reveals them):\n\n  **bold**   *italic*   <u>underline</u>\n  <span style=\"font-size:24px\">size</span>"
                                 "\n\nThe editor shows them formatted and dims the marks; Markdown viewers and browsers render the same.\n"
                                 "In HTML documents <b>, <i> and <u> are used. Code files are left alone.")
 
@@ -1096,6 +1098,12 @@ class MainWindow(QMainWindow):
         self.settings["word_wrap"] = on
         for p in self.all_tabs():
             self.editor_of(p).set_word_wrap(on)
+
+    def set_show_marks(self, on):
+        from . import highlighter
+        highlighter.SHOW_MARKS = on
+        for p in self.all_tabs():
+            self.editor_of(p).highlighter.rehighlight()
 
     def set_whitespace(self, on):
         self.settings["show_whitespace"] = on

@@ -181,6 +181,7 @@ def lang_by_name(name):
 
 
 RICH_LANGS = ("Plain text", "Markdown", "HTML / XML")
+SHOW_MARKS = False                          # View > Show Formatting Marks
 _RICH_RULES = [
     (re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*"), "bold"),
     (re.compile(r"<b>(.+?)</b>", re.I), "bold"),
@@ -190,6 +191,26 @@ _RICH_RULES = [
     (re.compile(r"<u>(.+?)</u>", re.I), "underline"),
     (re.compile(r"(<span style=\"font-size:\s*(\d+)px\">)(.+?)(</span>)", re.I), "size"),
 ]
+
+
+def rich_matches(text):
+    """[(kind, match, inner start, inner end)] for every formatting mark pair in a line."""
+    if "*" not in text and "<" not in text and "_" not in text:
+        return []
+    out = []
+    for rx, kind in _RICH_RULES:
+        for m in rx.finditer(text):
+            a, b = m.span(3) if kind == "size" else m.span(1)
+            out.append((kind, m, a, b))
+    return out
+
+
+def mark_spans(text):
+    """[(start, end)] of the formatting mark characters in a line (the opening and closing marks)."""
+    spans = []
+    for kind, m, a, b in rich_matches(text):
+        spans += [(m.start(), a), (b, m.end())]
+    return sorted(spans)
 
 
 class Highlighter(QSyntaxHighlighter):
@@ -229,34 +250,33 @@ class Highlighter(QSyntaxHighlighter):
             self._spell(text)
 
     def _rich(self, text):
-        """Shows **bold**, *italic*, <u>underline</u> and <span style="font-size:20px">size</span> as formatted text
-        (the marks stay in the file, dimmed, so any Markdown viewer renders the same)."""
-        if "*" not in text and "<" not in text and "_" not in text:
-            return
-        dim = QColor(theme.c("FAINT"))
-        for rx, kind in _RICH_RULES:
-            for m in rx.finditer(text):
-                a, b = m.span(1)
-                fmt = self.format(a)
-                if kind == "bold":
-                    fmt.setFontWeight(QFont.Bold)
-                elif kind == "italic":
-                    fmt.setFontItalic(True)
-                elif kind == "underline":
-                    fmt.setFontUnderline(True)
-                elif kind == "size":
-                    px = int(m.group(2))
-                    fmt.setFontPointSize(max(6.0, min(80.0, px * 0.75)))
-                    a, b = m.span(3)
-                self.setFormat(a, b - a, fmt) if kind != "size" else self.setFormat(a, b - a, fmt)
-                for ms, me in ((m.start(), a), (b, m.end())):
-                    mark = self.format(ms)
-                    mark.setForeground(dim)
+        """Shows **bold**, *italic*, <u>underline</u> and <span style="font-size:20px">size</span> as formatted text.
+        The marks stay in the file (so any Markdown viewer renders the same) but are hidden here, unless
+        View > Show Formatting Marks is on."""
+        hide = QColor(0, 0, 0, 0)
+        for kind, m, a, b in rich_matches(text):
+            fmt = self.format(a)
+            if kind == "bold":
+                fmt.setFontWeight(QFont.Bold)
+            elif kind == "italic":
+                fmt.setFontItalic(True)
+            elif kind == "underline":
+                fmt.setFontUnderline(True)
+            elif kind == "size":
+                fmt.setFontPointSize(max(6.0, min(80.0, int(m.group(2)) * 0.75)))
+            self.setFormat(a, b - a, fmt)
+            for ms, me in ((m.start(), a), (b, m.end())):
+                mark = self.format(ms)
+                if SHOW_MARKS:
+                    mark.setForeground(QColor(theme.c("FAINT")))
                     mark.setFontWeight(QFont.Normal)
                     mark.setFontItalic(False)
                     mark.setFontUnderline(False)
-                    mark.setFontPointSize(max(6.0, self.document().defaultFont().pointSizeF() * 0.8))
-                    self.setFormat(ms, me - ms, mark)
+                else:
+                    mark.setForeground(hide)
+                    mark.setFontPointSize(0.1)
+                    mark.setFontUnderline(False)
+                self.setFormat(ms, me - ms, mark)
 
     def _spell(self, text):
         """Red squiggle under misspelled words: everywhere in plain text / Markdown, only in comments and strings in code."""
@@ -264,8 +284,9 @@ class Highlighter(QSyntaxHighlighter):
         if not prose and self.lang.name in ("Log", "JSON"):
             return
         ok_colors = {self.fmts["comment"].foreground().color().name(), self.fmts["string"].foreground().color().name()}
+        hidden = mark_spans(text) if self.lang.name in RICH_LANGS else []
         for m in WORD.finditer(text):
-            if not speller.is_wrong(m.group()):
+            if not speller.is_wrong(m.group()) or any(a <= m.start() < b for a, b in hidden):
                 continue
             fmt = self.format(m.start())
             col = fmt.foreground().color().name() if fmt.foreground().style() else ""

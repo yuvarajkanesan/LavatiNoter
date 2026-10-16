@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
 from . import spell as spellmod
 from . import theme, util
-from .highlighter import PLAIN, Highlighter, lang_for_path
+from .highlighter import PLAIN, RICH_LANGS, Highlighter, lang_for_path, mark_spans
 
 BRACKETS = {"(": ")", "[": "]", "{": "}"}
 CLOSERS = {v: k for k, v in BRACKETS.items()}
@@ -66,6 +66,7 @@ class CodeEditor(QPlainTextEdit):
         self._img_sel = None                # block number of the selected picture
         self._in_zone_fix = False
         self._prev_block = 0
+        self._prev_col = 0
         self.autocorrect_on = False
         self._ac = None                     # the last automatic correction, so Backspace can take it back
         self.gutter = LineNumberArea(self)
@@ -471,6 +472,18 @@ class CodeEditor(QPlainTextEdit):
             return super().keyPressEvent(e)
         if self._img_sel is not None and self._image_key(e):
             return
+        if key in (Qt.Key_Backspace, Qt.Key_Delete) and not mods and not self.textCursor().hasSelection() and self.lang.name in RICH_LANGS:
+            c = self.textCursor()
+            col = c.positionInBlock()
+            for a, b in mark_spans(c.block().text()):          # step over an invisible mark so the visible letter is deleted
+                if key == Qt.Key_Backspace and col == b:
+                    c.setPosition(c.block().position() + a)
+                    self.setTextCursor(c)
+                    break
+                if key == Qt.Key_Delete and col == a:
+                    c.setPosition(c.block().position() + b)
+                    self.setTextCursor(c)
+                    break
         if key == Qt.Key_Backspace and self._ac is not None and not mods:
             if self._undo_autocorrect():
                 return
@@ -752,7 +765,25 @@ class CodeEditor(QPlainTextEdit):
         zb = self._zone_blanks(info)
         return (prev, zb) if k <= zb else None
 
+    def _skip_hidden_marks(self):
+        """The formatting marks are invisible, so the caret may not stop inside one: it jumps to the nearer visible edge."""
+        cur = self.textCursor()
+        if cur.hasSelection() or self._in_zone_fix or self.lang.name not in RICH_LANGS:
+            return
+        block = cur.block()
+        col = cur.positionInBlock()
+        for a, b in mark_spans(block.text()):
+            if a < col < b:
+                forward = block.blockNumber() > self._prev_block or (block.blockNumber() == self._prev_block and col >= self._prev_col)
+                self._in_zone_fix = True
+                cur.setPosition(block.position() + (b if forward else a))
+                self.setTextCursor(cur)
+                self._in_zone_fix = False
+                return
+
     def _leave_zone(self):
+        self._skip_hidden_marks()
+        self._prev_col = self.textCursor().positionInBlock()
         cur = self.textCursor()
         if cur.hasSelection() or self._in_zone_fix:
             return

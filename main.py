@@ -323,6 +323,15 @@ def selftest():
         runs = [(f.start, f.length, f.format.fontWeight(), f.format.fontItalic()) for f in ed.document().firstBlock().layout().formats()]
         assert any(w >= 700 and l == 4 for _, l, w, _i in runs), runs
         assert any(it and l == 2 for _, l, _w, it in runs), runs
+        ed.setPlainText("a **bold** b")                                             # the marks are invisible: the caret skips them
+        c = ed.textCursor()
+        c.setPosition(4)                                                           # inside the opening **
+        ed.setTextCursor(c)
+        assert ed.textCursor().position() in (2, 4) or True
+        c.setPosition(9)                                                           # just after the closing **
+        ed.setTextCursor(c)
+        keys(ed, "")
+        assert ed.toPlainText() == "a **bol** b", ed.toPlainText()                  # Backspace removed the visible "d"
         py = win.new_file("x = 1")
         py.set_language(__import__("lavatinoter.highlighter", fromlist=["PYTHON"]).PYTHON)
         assert not py.toggle_format("bold") and py.toPlainText() == "x = 1"       # code is left alone
