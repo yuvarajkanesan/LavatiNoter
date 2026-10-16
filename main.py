@@ -965,6 +965,58 @@ def selftest():
         assert ed.font().pointSizeF() == 11.0 and win.settings["font_size"] == 11
         ed.document().setModified(False)
 
+    def t_format_whole_lines():
+        from lavatinoter.highlighter import rich_matches
+        ed = win.new_file("Hi How are you option to extend the issues\nsecond line here\nthird line\n")
+        doc = ed.document()
+
+        def select(a, b):
+            c = ed.textCursor()
+            c.setPosition(a)
+            c.setPosition(b, QTextCursor.KeepAnchor)
+            ed.setTextCursor(c)
+
+        def nested_ok(line):
+            """Every mark pair is properly nested: no pair starts inside another and ends outside it."""
+            spans = [(m.start(), m.end()) for _k, m, _a, _b in rich_matches(line)]
+            return all(not (a < c < b < d) for a, b in spans for c, d in spans)
+        t = ed.toPlainText()
+        i = t.index("extend")
+        select(i, i + len("extend the issues"))
+        ed.toggle_format("underline")
+        assert ed.toPlainText().split("\n")[0] == "Hi How are you option to <u>extend the issues</u>", ed.toPlainText()
+        first = doc.firstBlock()
+        # select the whole line the way a user does: from the start to the visible end, which leaves the closing </u> out
+        select(first.position(), first.position() + first.text().index("</u>"))
+        ed.toggle_format("bold")
+        line = ed.toPlainText().split("\n")[0]
+        assert line == "**Hi How are you option to <u>extend the issues</u>**", line      # the pair was taken in whole, never crossed
+        assert nested_ok(line)
+        # a selection that starts inside the underlined part is widened the same way
+        select(first.position() + line.index("option"), first.position() + line.index("extend") + 3)
+        ed.toggle_format("italic")
+        line = ed.toPlainText().split("\n")[0]
+        assert nested_ok(line) and "_" in line, line
+        # several lines at once: each line gets its own marks, and the same command takes them off again
+        select(doc.findBlockByNumber(1).position(), doc.findBlockByNumber(2).position() + len("third line"))
+        ed.toggle_format("bold")
+        lines = ed.toPlainText().split("\n")
+        assert lines[1] == "**second line here**" and lines[2] == "**third line**", lines
+        ed.toggle_format("bold")
+        lines = ed.toPlainText().split("\n")
+        assert lines[1] == "second line here" and lines[2] == "third line", lines
+        ed.set_text_size(20)
+        lines = ed.toPlainText().split("\n")
+        assert lines[1].startswith('<span style="font-size:20px">second') and lines[2].startswith("<span"), lines
+        # clear formatting returns plain text
+        select(first.position(), first.position() + len(first.text()))
+        assert ed.clear_format()
+        assert ed.toPlainText().split("\n")[0] == "Hi How are you option to extend the issues", ed.toPlainText().split("\n")[0]
+        select(doc.findBlockByNumber(1).position(), doc.findBlockByNumber(2).position() + 5)
+        ed.clear_format()
+        assert ed.toPlainText() == "Hi How are you option to extend the issues\nsecond line here\nthird line\n", repr(ed.toPlainText())
+        ed.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -974,7 +1026,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

@@ -14,7 +14,7 @@ from . import folding
 from . import spell as spellmod
 from . import theme, util
 from .finddialog_pos import PosMap
-from .highlighter import PLAIN, RICH_LANGS, Highlighter, lang_for_path, mark_spans
+from .highlighter import PLAIN, RICH_LANGS, Highlighter, lang_for_path, mark_spans, rich_matches
 
 BRACKETS = {"(": ")", "[": "]", "{": "}"}
 CLOSERS = {v: k for k, v in BRACKETS.items()}
@@ -720,11 +720,18 @@ class CodeEditor(QPlainTextEdit):
     _RIGHT_TOKEN = re.compile(r'^(\*\*|_|\*|</u>|</b>|</i>|</span>)')
     _KIND_OF = {"**": "bold", "<b>": "bold", "_": "italic", "*": "italic", "<i>": "italic", "<u>": "underline"}
     _CLOSER = {"**": "**", "<b>": "</b>", "_": "_", "*": "*", "<i>": "</i>", "<u>": "</u>"}
+    _SPAN_OPEN = re.compile(r'^<span style="font-size:(\d+)px">$')
+
+    def _kind_of_token(self, tok):
+        return "size" if tok.startswith("<span") else self._KIND_OF.get(tok)
+
+    def _closer_of(self, tok):
+        return "</span>" if tok.startswith("<span") else self._CLOSER.get(tok)
 
     def _find_layer(self, kind, s, e):
         """Looks outward from the text s..e through the layers of marks around it (bold, italic, underline and size can all
         be stacked) for the layer of `kind`. -> (position of its opening mark, its length, position of its closing mark,
-        its length) or None."""
+        its length, opening mark text) or None."""
         doc = self.document()
         block = doc.findBlock(s)
         if block != doc.findBlock(e) or e > block.position() + block.length() - 1:
@@ -742,15 +749,85 @@ class CodeEditor(QPlainTextEdit):
             right.append((j, n.group()))
             i, j = m.start(), j + len(n.group())
         for (lp, ltok), (rp, rtok) in zip(left, right):
-            if self._KIND_OF.get(ltok) == kind and self._CLOSER.get(ltok) == rtok:
+            if self._kind_of_token(ltok) == kind and self._closer_of(ltok) == rtok:
                 if ltok == "*" and ((lp > 0 and text[lp - 1] == "*") or text[rp + 1:rp + 2] == "*"):
                     continue                                   # half of a **
-                return block.position() + lp, len(ltok), block.position() + rp, len(rtok)
+                return block.position() + lp, len(ltok), block.position() + rp, len(rtok), ltok
         return None
 
+    def _normalize(self, s, e):
+        """Makes the range s..e safe to wrap: it may not cut a pair of marks in two (which would cross them, like
+        **a <u>b** c</u>). A range that does is widened to take the whole pair in. A range that is exactly a whole pair
+        becomes the text inside it."""
+        doc = self.document()
+        block = doc.findBlock(s)
+        base = block.position()
+        text = block.text()
+        ls, le = s - base, e - base
+        pairs = [(m.start(), m.end(), a2, b2) for _k, m, a2, b2 in rich_matches(text)]
+        for ms, me, a2, b2 in pairs:
+            if (ls, le) == (ms, me):
+                ls, le = a2, b2
+                break
+        changed = True
+        while changed:
+            changed = False
+            for ms, me, a2, b2 in pairs:
+                intersects = ls < me and ms < le
+                inside = ls >= a2 and le <= b2
+                contains = ls <= ms and me <= le
+                if intersects and not inside and not contains:
+                    ls, le = min(ls, ms), max(le, me)
+                    changed = True
+        return base + ls, base + le
+
+    def _segments(self, s, e):
+        """The part of every non-blank line that the selection covers: [(line number, start col, end col)]."""
+        doc = self.document()
+        first, last = doc.findBlock(s), doc.findBlock(e)
+        out = []
+        blk = first
+        while blk.isValid() and blk.blockNumber() <= last.blockNumber():
+            a = max(s, blk.position()) - blk.position()
+            b = min(e, blk.position() + len(blk.text())) - blk.position()
+            if b > a and blk.text()[a:b].strip():
+                out.append((blk.blockNumber(), a, b))
+            blk = blk.next()
+        return out
+
+    def _toggle_one(self, kind, s, e, remove):
+        """Adds or removes one kind of mark around s..e (inside one line). -> (new start, new end) of the text."""
+        doc = self.document()
+        opening, closing = self._marks(kind)
+        s, e = self._normalize(s, e)
+        layer = self._find_layer(kind, s, e)
+        cur = QTextCursor(doc)
+        cur.setPosition(s)
+        cur.setPosition(e, QTextCursor.KeepAnchor)
+        text = cur.selectedText()
+        if layer is not None and remove:                            # take that one layer off, keep the rest
+            lp, ll, rp, rl, _t = layer
+            c = QTextCursor(doc)
+            c.setPosition(rp)
+            c.setPosition(rp + rl, QTextCursor.KeepAnchor)
+            c.removeSelectedText()
+            c.setPosition(lp)
+            c.setPosition(lp + ll, QTextCursor.KeepAnchor)
+            c.removeSelectedText()
+            return s - ll, e - ll
+        if remove and len(text) >= len(opening) + len(closing) and text.startswith(opening) and text.endswith(closing):
+            cur.insertText(text[len(opening):len(text) - len(closing)])
+            return s, e - len(opening) - len(closing)
+        if layer is None or not remove:
+            if layer is not None:
+                return s, e                                         # already has it
+            cur.insertText(opening + text + closing)
+            return s + len(opening), e + len(opening)
+        return s, e
+
     def toggle_format(self, kind):
-        """Bold / italic / underline: wraps the selection (or the word at the caret) in the marks, or removes them.
-        The three can be combined on the same text, in any order."""
+        """Bold / italic / underline on the selection (every selected line gets its own marks) or the word at the caret.
+        The three can be combined on the same text, in any order; pressing again takes that one off."""
         if not self.format_supported() or self.isReadOnly():
             return False
         opening, closing = self._marks(kind)
@@ -762,49 +839,118 @@ class CodeEditor(QPlainTextEdit):
                 cur.movePosition(QTextCursor.Left, QTextCursor.MoveAnchor, len(closing))
                 self.setTextCursor(cur)
                 return True
-        text = cur.selectedText().replace("\u2029", "\n")
         s, e = cur.selectionStart(), cur.selectionEnd()
+        segs = self._segments(s, e)
+        if not segs:
+            return True
         doc = self.document()
-        layer = self._find_layer(kind, s, e)
+        # already formatted on every line -> take it off, otherwise put it on the lines that lack it (as in a word processor)
+        def covered(seg):
+            blk = doc.findBlockByNumber(seg[0])
+            ns, ne = self._normalize(blk.position() + seg[1], blk.position() + seg[2])
+            lay = self._find_layer(kind, ns, ne)
+            own = False
+            if lay is None:
+                c = QTextCursor(doc)
+                c.setPosition(ns)
+                c.setPosition(ne, QTextCursor.KeepAnchor)
+                t = c.selectedText()
+                own = len(t) >= len(opening) + len(closing) and t.startswith(opening) and t.endswith(closing)
+            return lay is not None or own
+        remove = all(covered(sg) for sg in segs)
         cur.beginEditBlock()
-        if layer is not None:                                       # already formatted: take that one layer off, keep the rest
-            lp, ll, rp, rl = layer
-            c = QTextCursor(doc)
-            c.setPosition(rp)
-            c.setPosition(rp + rl, QTextCursor.KeepAnchor)
-            c.removeSelectedText()
-            c.setPosition(lp)
-            c.setPosition(lp + ll, QTextCursor.KeepAnchor)
-            c.removeSelectedText()
-            start, length = s - ll, e - s
-        elif len(text) >= len(opening) + len(closing) and text.startswith(opening) and text.endswith(closing):
-            inner = text[len(opening):len(text) - len(closing)]       # the selection includes its own marks
-            cur.insertText(inner)
-            start, length = s, len(inner)
-        else:
-            cur.insertText(opening + text + closing)
-            start, length = s + len(opening), len(text)
+        last_range = None
+        for ln, a, b in reversed(segs):                             # bottom up, so earlier positions stay valid
+            blk = doc.findBlockByNumber(ln)
+            last_range = (ln, self._toggle_one(kind, blk.position() + a, blk.position() + b, remove or False) if (remove or not covered((ln, a, b))) else None)
         cur.endEditBlock()
         sel = QTextCursor(doc)
-        sel.setPosition(start)
-        sel.setPosition(start + length, QTextCursor.KeepAnchor)
+        if len(segs) == 1 and last_range and last_range[1]:
+            sel.setPosition(last_range[1][0])
+            sel.setPosition(last_range[1][1], QTextCursor.KeepAnchor)
+        else:                                                       # several lines: keep them selected
+            sel.setPosition(doc.findBlockByNumber(segs[0][0]).position())
+            end_blk = doc.findBlockByNumber(segs[-1][0])
+            sel.setPosition(end_blk.position() + len(end_blk.text()), QTextCursor.KeepAnchor)
         self.setTextCursor(sel)
         return True
 
-    SIZE_RX = re.compile(r'^<span style="font-size:\s*(\d+)px">(.*)</span>$', re.S)
-
-    def _current_size_px(self):
+    def clear_format(self):
+        """Removes every bold / italic / underline / size mark from the selection (or the current line)."""
+        if not self.format_supported() or self.isReadOnly():
+            return False
         cur = self.textCursor()
-        line = cur.block().text()
-        col = cur.positionInBlock()
-        for m in re.finditer(r'<span style="font-size:\s*(\d+)px">(.+?)</span>', line):
-            if m.start() <= col <= m.end():
-                return int(m.group(1))
+        doc = self.document()
+        s, e = (cur.selectionStart(), cur.selectionEnd()) if cur.hasSelection() else (cur.block().position(), cur.block().position() + len(cur.block().text()))
+        cur.beginEditBlock()
+        blk = doc.findBlock(e)
+        while blk.isValid() and blk.position() + len(blk.text()) >= s:
+            text = blk.text()
+            lo, hi = max(s, blk.position()) - blk.position(), min(e, blk.position() + len(text)) - blk.position()
+            spans = []
+            for _k, m, a2, b2 in rich_matches(text):
+                if m.start() < hi and m.end() > lo:                  # a pair that touches the selection goes completely
+                    spans += [(m.start(), a2), (b2, m.end())]
+            for m in re.finditer(r'</?(?:u|b|i)>|</?span[^>]*>|\*\*', text):
+                if lo <= m.start() < hi:
+                    spans.append((m.start(), m.end()))
+            done = set()
+            for a2, b2 in sorted(spans, reverse=True):
+                if (a2, b2) in done:
+                    continue
+                done.add((a2, b2))
+                c = QTextCursor(doc)
+                c.setPosition(blk.position() + a2)
+                c.setPosition(blk.position() + b2, QTextCursor.KeepAnchor)
+                c.removeSelectedText()
+            blk = blk.previous()
+        cur.endEditBlock()
+        return True
+
+    def _current_size_px(self, s=None, e=None):
+        """The size of the text at the caret / selection (the size mark around it, else the editor's own size), in px."""
+        if s is not None:
+            lay = self._find_layer("size", s, e)
+            if lay:
+                m = self._SPAN_OPEN.match(lay[4])
+                if m:
+                    return int(m.group(1))
         f = self.font()
         return round(f.pixelSize() if f.pixelSize() > 0 else f.pointSizeF() * 96 / 72)
 
+    def _size_one(self, s, e, px, delta):
+        doc = self.document()
+        s, e = self._normalize(s, e)
+        base = self._current_size_px(s, e)
+        new = px if px is not None else max(6, min(80, base + delta))
+        lay = self._find_layer("size", s, e)
+        c = QTextCursor(doc)
+        if lay is not None:
+            lp, ll, rp, rl, _tok = lay
+            if new == 0:
+                c.setPosition(rp)
+                c.setPosition(rp + rl, QTextCursor.KeepAnchor)
+                c.removeSelectedText()
+                c.setPosition(lp)
+                c.setPosition(lp + ll, QTextCursor.KeepAnchor)
+                c.removeSelectedText()
+                return s - ll, e - ll
+            tag = f'<span style="font-size:{new}px">'
+            c.setPosition(lp)
+            c.setPosition(lp + ll, QTextCursor.KeepAnchor)
+            c.insertText(tag)
+            return s + len(tag) - ll, e + len(tag) - ll
+        if new == 0:
+            return s, e
+        c.setPosition(s)
+        c.setPosition(e, QTextCursor.KeepAnchor)
+        tag = f'<span style="font-size:{new}px">'
+        c.insertText(tag + c.selectedText() + "</span>")
+        return s + len(tag), e + len(tag)
+
     def set_text_size(self, px=None, delta=0):
-        """Sets the size of the selected text (px) or changes it by `delta` px. px=0 removes the size mark."""
+        """Sets the size (px) of the selected text, or changes it by `delta` px. px=0 removes the size. Every selected line is
+        sized on its own; with nothing selected the word at the caret is used."""
         if not self.format_supported() or self.isReadOnly():
             return False
         cur = self.textCursor()
@@ -812,31 +958,25 @@ class CodeEditor(QPlainTextEdit):
             cur.select(QTextCursor.WordUnderCursor)
             if not cur.hasSelection():
                 return False
-        base = self._current_size_px()
-        text = cur.selectedText().replace("\u2029", "\n")
-        s = cur.selectionStart()
-        m = self.SIZE_RX.match(text)
+        s, e = cur.selectionStart(), cur.selectionEnd()
+        segs = self._segments(s, e)
+        if not segs:
+            return False
         doc = self.document()
-        if m is None:                       # the caret may sit inside a span without having selected its tags
-            block = cur.block()
-            for sm in re.finditer(r'<span style="font-size:\s*(\d+)px">(.+?)</span>', block.text()):
-                a, b = block.position() + sm.start(), block.position() + sm.end()
-                if a <= cur.selectionStart() and cur.selectionEnd() <= b:
-                    cur.setPosition(a)
-                    cur.setPosition(b, QTextCursor.KeepAnchor)
-                    text = cur.selectedText()
-                    m = self.SIZE_RX.match(text)
-                    s = a
-                    break
-        inner = m.group(2) if m else text
-        new = px if px is not None else max(6, min(80, base + delta))
-        out = inner if new == 0 else f'<span style="font-size:{new}px">{inner}</span>'
         cur.beginEditBlock()
-        cur.insertText(out)
+        result = None
+        for ln, a, b in reversed(segs):
+            blk = doc.findBlockByNumber(ln)
+            result = self._size_one(blk.position() + a, blk.position() + b, px, delta)
         cur.endEditBlock()
         sel = QTextCursor(doc)
-        sel.setPosition(s)
-        sel.setPosition(s + len(out), QTextCursor.KeepAnchor)
+        if len(segs) == 1:
+            sel.setPosition(result[0])
+            sel.setPosition(result[1], QTextCursor.KeepAnchor)
+        else:
+            sel.setPosition(doc.findBlockByNumber(segs[0][0]).position())
+            end_blk = doc.findBlockByNumber(segs[-1][0])
+            sel.setPosition(end_blk.position() + len(end_blk.text()), QTextCursor.KeepAnchor)
         self.setTextCursor(sel)
         return True
 

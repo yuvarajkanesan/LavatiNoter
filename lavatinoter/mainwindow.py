@@ -287,6 +287,7 @@ class MainWindow(QMainWindow):
         self.a_bold = A("Bold", lambda: self._format("bold"), "Ctrl+B", "bold", tip="Bold (Ctrl+B)")
         self.a_italic = A("Italic", lambda: self._format("italic"), "Ctrl+I", "italic", tip="Italic (Ctrl+I)")
         self.a_underline = A("Underline", lambda: self._format("underline"), "Ctrl+U", "underline", tip="Underline (Ctrl+U)")
+        self.a_clear_fmt = A("Clear Formatting", lambda: self._clear_format(), "Ctrl+Space", None, tip="Removes bold, italic, underline and size from the selection or line (Ctrl+Space)")
         self.a_size_up = A("Increase Text Size", lambda: self._size(delta=2), "Ctrl+Alt+Up", "textup", tip="Larger text (Ctrl+Alt+Up)")
         self.a_size_down = A("Decrease Text Size", lambda: self._size(delta=-2), "Ctrl+Alt+Down", "textdown", tip="Smaller text (Ctrl+Alt+Down)")
         self.a_format_doc = A("Format Document", self.format_document, "Shift+Alt+F", None,
@@ -425,7 +426,7 @@ class MainWindow(QMainWindow):
             self.eol_actions[val] = a
 
         m = mb.addMenu("Format")
-        for a in (self.a_bold, self.a_italic, self.a_underline, None, self.a_size_up, self.a_size_down):
+        for a in (self.a_bold, self.a_italic, self.a_underline, self.a_clear_fmt, None, self.a_size_up, self.a_size_down):
             m.addSeparator() if a is None else m.addAction(a)
         m.addSeparator()
         m.addAction(self.a_format_doc)
@@ -1266,6 +1267,11 @@ class MainWindow(QMainWindow):
             return
         if not ed.toggle_format(kind):
             self.flash("Bold, italic and underline work in text, Markdown and HTML documents.")
+
+    def _clear_format(self):
+        ed = self.editor_of(self.current())
+        if ed is not None and not ed.clear_format():
+            self.flash("Clear Formatting works in text, Markdown and HTML documents.")
 
     def _size(self, px=None, delta=0):
         ed = self.editor_of(self.current())
