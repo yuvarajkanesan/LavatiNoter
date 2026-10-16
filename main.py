@@ -305,8 +305,8 @@ def selftest():
         assert ed.toggle_format("bold") and ed.toPlainText() == "hello **world**"
         assert ed.textCursor().selectedText() == "world"
         assert ed.toggle_format("bold") and ed.toPlainText() == "hello world"      # toggles back off
-        assert ed.toggle_format("italic") and ed.toPlainText() == "hello *world*"
-        assert ed.toggle_format("underline") and ed.toPlainText() == "hello *<u>world</u>*"
+        assert ed.toggle_format("italic") and ed.toPlainText() == "hello _world_"
+        assert ed.toggle_format("underline") and ed.toPlainText() == "hello _<u>world</u>_"
         for _ in range(4):
             ed.undo()
         assert ed.toPlainText() == "hello world", ed.toPlainText()
@@ -882,6 +882,59 @@ def selftest():
         page._lsp_state = None
         win.close_tab(page, force=True)
 
+
+    def t_format_combos():
+        ed = win.new_file("hello big world\nnext line\n")
+        doc = ed.document()
+
+        def select(word):
+            c = ed.textCursor()
+            i = ed.toPlainText().index(word)
+            c.setPosition(i)
+            c.setPosition(i + len(word), QTextCursor.KeepAnchor)
+            ed.setTextCursor(c)
+
+        def visible_runs(block=0):
+            """[(text, size pt, bold, italic, underline)] of the characters that are actually visible."""
+            b = doc.findBlockByNumber(block)
+            out = []
+            runs = [(r.start, r.length, r.format.foreground().color().alpha(), r.format.fontPointSize(), r.format.fontWeight(),
+                     r.format.fontItalic(), r.format.fontUnderline()) for r in b.layout().formats()]
+            for i, ch in enumerate(b.text()):
+                hit = [r for r in runs if r[0] <= i < r[0] + r[1]]
+                if not hit:
+                    out.append((ch, 0, False, False, False))
+                    continue
+                _s, _l, alpha, size, weight, italic, underline = hit[-1]
+                if alpha > 0 and size != 0.1:
+                    out.append((ch, size, weight >= 700, italic, underline))
+            return out
+        select("big")
+        for kind in ("bold", "italic", "underline"):
+            assert ed.toggle_format(kind)
+        assert ed.toPlainText().startswith("hello **_<u>big</u>_** world"), ed.toPlainText()
+        assert ed.set_text_size(24)
+        shown = visible_runs()
+        text = "".join(c for c, *_ in shown)
+        assert text == "hello big world", repr(text)                            # nothing disappears
+        big = [r for r in shown if r[0] in "big" and r[1] > 0]
+        assert len(big) == 3 and all(r[2] and r[3] and r[4] and abs(r[1] - 18.0) < 0.2 for r in big), big      # bold + italic + underline + size
+        select("big")
+        assert ed.toggle_format("italic")                                         # taking one off keeps the others
+        assert "_" not in ed.toPlainText().split("\n")[0] and "**" in ed.toPlainText()
+        assert "".join(c for c, *_ in visible_runs()) == "hello big world"
+        # size up and down changes only the chosen text, and the second line keeps its height
+        h2 = ed.blockBoundingRect(doc.findBlockByNumber(1)).height()
+        for _ in range(6):
+            ed.set_text_size(delta=2)
+        for _ in range(12):
+            ed.set_text_size(delta=-2)
+        assert ed.blockBoundingRect(doc.findBlockByNumber(1)).height() == h2
+        assert ed.blockCount() == 3, "sizing must never add lines"
+        assert ed.toPlainText().count("<span") == 1, ed.toPlainText()             # one span, never nested copies
+        assert ed.font().pointSizeF() > 0, "the style sheet must not fix the editor font size"
+        ed.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -891,7 +944,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

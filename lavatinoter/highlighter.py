@@ -388,33 +388,49 @@ class Highlighter(QSyntaxHighlighter):
             self._spell(text)
 
     def _rich(self, text):
-        """Shows **bold**, *italic*, <u>underline</u> and <span style="font-size:20px">size</span> as formatted text.
-        The marks stay in the file (so any Markdown viewer renders the same) but are hidden here, unless
+        """Shows **bold**, _italic_, <u>underline</u> and <span style="font-size:20px">size</span> as formatted text, in any
+        combination. The marks stay in the file (so any Markdown viewer renders the same) but are hidden here, unless
         View > Show Formatting Marks is on."""
-        hide = QColor(0, 0, 0, 0)
-        for kind, m, a, b in rich_matches(text):
-            fmt = self.format(a)
-            if kind == "bold":
-                fmt.setFontWeight(QFont.Bold)
-            elif kind == "italic":
-                fmt.setFontItalic(True)
-            elif kind == "underline":
-                fmt.setFontUnderline(True)
-            elif kind == "size":
-                fmt.setFontPointSize(max(6.0, min(80.0, int(m.group(2)) * 0.75)))
-            self.setFormat(a, b - a, fmt)
-            for ms, me in ((m.start(), a), (b, m.end())):
-                mark = self.format(ms)
-                if SHOW_MARKS:
-                    mark.setForeground(QColor(theme.c("FAINT")))
-                    mark.setFontWeight(QFont.Normal)
-                    mark.setFontItalic(False)
-                    mark.setFontUnderline(False)
+        if len(text) > 4000:
+            return
+        matches = rich_matches(text)
+        if not matches:
+            return
+        marks = mark_spans(text)
+        mark_chars = set()
+        for a, b in marks:
+            mark_chars.update(range(a, b))
+        for kind, m, a, b in matches:                       # formatting of the visible text first ...
+            px = int(m.group(2)) if kind == "size" else 0
+            for i in range(a, b):
+                if i in mark_chars:
+                    continue
+                fmt = self.format(i)
+                if kind == "bold":
+                    fmt.setFontWeight(QFont.Bold)
+                elif kind == "italic":
+                    fmt.setFontItalic(True)
+                elif kind == "underline":
+                    fmt.setFontUnderline(True)
                 else:
-                    mark.setForeground(hide)
-                    mark.setFontPointSize(0.1)
-                    mark.setFontUnderline(False)
-                self.setFormat(ms, me - ms, mark)
+                    fmt.setFontPointSize(max(6.0, min(80.0, px * 0.75)))
+                self.setFormat(i, 1, fmt)
+        hide = QColor(0, 0, 0, 0)
+        for a, b in marks:                                  # ... then the marks themselves, last, so nothing inherits their look
+            for i in range(a, b):
+                fmt = self.format(i)
+                if SHOW_MARKS:
+                    fmt.setForeground(QColor(theme.c("FAINT")))
+                    fmt.setFontWeight(QFont.Normal)
+                    fmt.setFontItalic(False)
+                    fmt.setFontUnderline(False)
+                else:
+                    fmt.setForeground(hide)
+                    fmt.setFontPointSize(0.1)
+                    fmt.setFontUnderline(False)
+                    fmt.setFontWeight(QFont.Normal)
+                    fmt.setFontItalic(False)
+                self.setFormat(i, 1, fmt)
 
     def _spell(self, text):
         """Red squiggle under misspelled words: everywhere in plain text / Markdown, only in comments and strings in code."""

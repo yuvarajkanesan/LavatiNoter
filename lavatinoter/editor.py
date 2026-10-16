@@ -713,11 +713,44 @@ class CodeEditor(QPlainTextEdit):
 
     def _marks(self, kind):
         html = self.lang.name == "HTML / XML"
-        return {"bold": ("<b>", "</b>") if html else ("**", "**"), "italic": ("<i>", "</i>") if html else ("*", "*"),
+        return {"bold": ("<b>", "</b>") if html else ("**", "**"), "italic": ("<i>", "</i>") if html else ("_", "_"),
                 "underline": ("<u>", "</u>")}[kind]
 
+    _LEFT_TOKEN = re.compile(r'(\*\*|_|\*|<u>|<b>|<i>|<span style="font-size:\d+px">)$')
+    _RIGHT_TOKEN = re.compile(r'^(\*\*|_|\*|</u>|</b>|</i>|</span>)')
+    _KIND_OF = {"**": "bold", "<b>": "bold", "_": "italic", "*": "italic", "<i>": "italic", "<u>": "underline"}
+    _CLOSER = {"**": "**", "<b>": "</b>", "_": "_", "*": "*", "<i>": "</i>", "<u>": "</u>"}
+
+    def _find_layer(self, kind, s, e):
+        """Looks outward from the text s..e through the layers of marks around it (bold, italic, underline and size can all
+        be stacked) for the layer of `kind`. -> (position of its opening mark, its length, position of its closing mark,
+        its length) or None."""
+        doc = self.document()
+        block = doc.findBlock(s)
+        if block != doc.findBlock(e) or e > block.position() + block.length() - 1:
+            return None
+        text = block.text()
+        ls, le = s - block.position(), e - block.position()
+        left, right = [], []                                   # innermost layer first
+        i, j = ls, le
+        while True:
+            m = self._LEFT_TOKEN.search(text[:i])
+            n = self._RIGHT_TOKEN.match(text[j:])
+            if not m or not n:
+                break
+            left.append((m.start(), m.group()))
+            right.append((j, n.group()))
+            i, j = m.start(), j + len(n.group())
+        for (lp, ltok), (rp, rtok) in zip(left, right):
+            if self._KIND_OF.get(ltok) == kind and self._CLOSER.get(ltok) == rtok:
+                if ltok == "*" and ((lp > 0 and text[lp - 1] == "*") or text[rp + 1:rp + 2] == "*"):
+                    continue                                   # half of a **
+                return block.position() + lp, len(ltok), block.position() + rp, len(rtok)
+        return None
+
     def toggle_format(self, kind):
-        """Bold / italic / underline: wraps the selection (or the word at the caret) in the marks, or removes them."""
+        """Bold / italic / underline: wraps the selection (or the word at the caret) in the marks, or removes them.
+        The three can be combined on the same text, in any order."""
         if not self.format_supported() or self.isReadOnly():
             return False
         opening, closing = self._marks(kind)
@@ -732,27 +765,29 @@ class CodeEditor(QPlainTextEdit):
         text = cur.selectedText().replace("\u2029", "\n")
         s, e = cur.selectionStart(), cur.selectionEnd()
         doc = self.document()
-        outer = QTextCursor(doc)
-        outer.setPosition(max(0, s - len(opening)))
-        outer.setPosition(min(doc.characterCount() - 1, e + len(closing)), QTextCursor.KeepAnchor)
-        around = outer.selectedText()
+        layer = self._find_layer(kind, s, e)
         cur.beginEditBlock()
-        if len(text) >= len(opening) + len(closing) and text.startswith(opening) and text.endswith(closing):
-            inner = text[len(opening):len(text) - len(closing)]
+        if layer is not None:                                       # already formatted: take that one layer off, keep the rest
+            lp, ll, rp, rl = layer
+            c = QTextCursor(doc)
+            c.setPosition(rp)
+            c.setPosition(rp + rl, QTextCursor.KeepAnchor)
+            c.removeSelectedText()
+            c.setPosition(lp)
+            c.setPosition(lp + ll, QTextCursor.KeepAnchor)
+            c.removeSelectedText()
+            start, length = s - ll, e - s
+        elif len(text) >= len(opening) + len(closing) and text.startswith(opening) and text.endswith(closing):
+            inner = text[len(opening):len(text) - len(closing)]       # the selection includes its own marks
             cur.insertText(inner)
-            start = s
-        elif around.startswith(opening) and around.endswith(closing) and s >= len(opening):
-            inner = text
-            outer.insertText(inner)
-            start = s - len(opening)
+            start, length = s, len(inner)
         else:
-            inner = text
-            cur.insertText(opening + inner + closing)
-            start = s + len(opening)
+            cur.insertText(opening + text + closing)
+            start, length = s + len(opening), len(text)
         cur.endEditBlock()
         sel = QTextCursor(doc)
         sel.setPosition(start)
-        sel.setPosition(start + len(inner), QTextCursor.KeepAnchor)
+        sel.setPosition(start + length, QTextCursor.KeepAnchor)
         self.setTextCursor(sel)
         return True
 
@@ -765,7 +800,8 @@ class CodeEditor(QPlainTextEdit):
         for m in re.finditer(r'<span style="font-size:\s*(\d+)px">(.+?)</span>', line):
             if m.start() <= col <= m.end():
                 return int(m.group(1))
-        return round(self.font().pointSizeF() * 4 / 3)
+        f = self.font()
+        return round(f.pixelSize() if f.pixelSize() > 0 else f.pointSizeF() * 96 / 72)
 
     def set_text_size(self, px=None, delta=0):
         """Sets the size of the selected text (px) or changes it by `delta` px. px=0 removes the size mark."""

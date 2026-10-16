@@ -615,7 +615,6 @@ def qss():
     radio_on = _png(f"radio-on-{tag}", _box(k["FIELD"], k["ACCENT"], k["ACCENT"], radio=True), 14)
     chev = _png(f"chev-{tag}", lambda p, s: (_pen(p, k["MUTED"], 1.6), _poly(p, [(3.5, 5), (7, 9), (10.5, 5)])))
     return f"""
-* {{ font-family: "{ui_family()}", "Segoe UI"; font-size: 13px; }}
 QMainWindow, QDialog {{ background: {k['BG']}; color: {k['TEXT']}; }}
 QWidget {{ color: {k['TEXT']}; }}
 QToolTip {{ background: {k['PANEL2']}; color: {k['TEXT']}; border: 1px solid {k['BORDER2']}; padding: 4px 6px; }}
