@@ -42,6 +42,42 @@ class _Icons(QFileIconProvider):
         return super().icon(arg)
 
 
+class GitModel(QFileSystemModel):
+    """The file tree, with names coloured by Git status (modified / new / deleted) when the folder is a repository."""
+    COLORS = {"M": "ORANGE", "A": "ACCENT", "?": "ACCENT", "D": "RED", "R": "BLUE", "U": "RED"}
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.status = {}
+        self.dirs = set()
+
+    def set_status(self, status):
+        self.status = {os.path.normcase(os.path.normpath(p)): c for p, c in status.items()}
+        self.dirs = set()
+        for p in self.status:
+            d = os.path.dirname(p)
+            while d and d not in self.dirs and len(d) > 3:
+                self.dirs.add(d)
+                nd = os.path.dirname(d)
+                if nd == d:
+                    break
+                d = nd
+        if self.rowCount(self.index(self.rootPath())) >= 0:
+            self.layoutChanged.emit()
+
+    def data(self, index, role=Qt.DisplayRole):
+        if role == Qt.ForegroundRole and self.status:
+            path = os.path.normcase(os.path.normpath(self.filePath(index)))
+            code = self.status.get(path)
+            if code:
+                return QColor(theme.c(self.COLORS.get(code, "MUTED")))
+            if path in self.dirs:
+                c = QColor(theme.c("ORANGE"))
+                c.setAlpha(170)
+                return c
+        return super().data(index, role)
+
+
 class WorkspacePanel(QWidget):
     openFile = Signal(str)
     findInFolder = Signal(str)
@@ -66,7 +102,7 @@ class WorkspacePanel(QWidget):
         el.addWidget(btn)
         el.addStretch()
         lay.addWidget(self.empty)
-        self.model = QFileSystemModel(self)
+        self.model = GitModel(self)
         self.model.setIconProvider(_Icons())
         self.model.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot | QDir.AllDirs)
         self.tree = QTreeView()
@@ -483,6 +519,17 @@ class ResultsPanel(QWidget):
 
     def clear(self):
         self.tree.clear()
+
+    def write(self, text):
+        """Raw program output into the Console tab (no time stamps), keeping the view at the end."""
+        c = self.console.textCursor()
+        c.movePosition(c.MoveOperation.End)
+        c.insertText(text)
+        self.console.setTextCursor(c)
+        self.console.ensureCursorVisible()
+
+    def show_console(self):
+        self.tabs.setCurrentIndex(1)
 
     def show_results(self, title, results, searched_files=None, truncated=False):
         """`results` = [FileResult]; fills the tree and brings the tab to the front."""

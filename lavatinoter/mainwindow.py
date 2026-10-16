@@ -4,14 +4,15 @@ import os
 import sys
 import time
 
-from PySide6.QtCore import QByteArray, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence,
                            QTextCursor)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QFormLayout,
                                QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
                                QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget, QComboBox, QLineEdit)
 
-from . import APP_NAME, VERSION, editorconfig, formatter, hexview, plugins, session, symbols, theme, util
+from . import runner
+from . import APP_NAME, VERSION, diffview, editorconfig, formatter, gitinfo, hexview, plugins, session, symbols, theme, util
 from .editor import CodeEditor
 from .finddialog import FindDialog
 from .highlighter import LANGS, PLAIN, lang_by_name, lang_for_path
@@ -87,9 +88,15 @@ class PreferencesDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
+    gitReady = Signal(object, object, str)             # from the Git worker thread to the window
+
     def __init__(self, settings):
         super().__init__()
         self.settings = settings
+        self._proc = None
+        self._macro = None                   # steps being recorded
+        self._last_macro = []
+        self._actions_by_text = {}
         self._icon_actions = []              # (action, icon name) pairs, rebuilt when the theme changes
         self._untitled = 0
         self._flash_timer = QTimer(self, singleShot=True, interval=4000)
@@ -123,6 +130,14 @@ class MainWindow(QMainWindow):
         self._build_status()
         self.find_dialog = FindDialog(self)
         self.plugins = plugins.PluginManager(self)
+        self._git_root = None
+        self._git_busy = False
+        self.gitReady.connect(self._git_done)
+        self._git_head = {}                  # path -> HEAD text (cleared when the status is refreshed)
+        self._git_timer = QTimer(self, interval=6000)
+        self._git_timer.timeout.connect(self.refresh_git)
+        self._git_marks_timer = QTimer(self, singleShot=True, interval=700)
+        self._git_marks_timer.timeout.connect(self._update_git_marks)
         self._plugin_actions = []
         self._nav = []                       # (tab key, line) places to go Back to
         self._autosave = QTimer(self, singleShot=True, interval=2500)      # like Notepad++: unsaved work is backed up as you type
@@ -205,7 +220,8 @@ class MainWindow(QMainWindow):
             if checkable:
                 a.toggled.connect(slot)
             else:
-                a.triggered.connect(lambda _=False, fn=slot: fn())      # never pass the 'checked' flag on
+                a.triggered.connect(lambda _=False, fn=slot, act=a: (self._macro_note(act), fn()))      # never pass the 'checked' flag on
+        self._actions_by_text[text] = a
         if tip:
             a.setToolTip(tip)
         if icon:
@@ -285,6 +301,18 @@ class MainWindow(QMainWindow):
         self.a_all_occ = A("Select All Occurrences", lambda: self._ed_call("select_all_occurrences"), "Ctrl+Shift+L")
         self.a_cursor_up = A("Add Cursor Above", lambda: self._ed_call("add_cursor_vertical", True), "Alt+Shift+Up")
         self.a_cursor_down = A("Add Cursor Below", lambda: self._ed_call("add_cursor_vertical", False), "Alt+Shift+Down")
+        self.a_cmp_tab = A("Compare with Another Open Tab...", self.compare_with_tab)
+        self.a_cmp_file = A("Compare with File on Disk...", self.compare_with_file)
+        self.a_cmp_saved = A("Compare with Saved Version", self.compare_with_saved)
+        self.a_cmp_git = A("Compare with Git HEAD (show changes)", self.compare_with_head)
+        self.a_run = A("Run Current File", self.run_file, "F5", None, tip="Runs the file with the interpreter for its language; output goes to the Console")
+        self.a_run_sel = A("Run Selection", lambda: self.run_file(selection=True), "Shift+F5")
+        self.a_stop = A("Stop", self.stop_run, "Ctrl+F5")
+        self.a_run_cfg = A("Edit Run Commands...", self.edit_run_commands)
+        self.a_rec = A("Start Recording", self.macro_toggle, "Ctrl+Alt+R", None, tip="Records your typing and editing commands so they can be played back")
+        self.a_play = A("Play Macro", self.macro_play, "Ctrl+Alt+P")
+        self.a_play_n = A("Run Macro Multiple Times...", self.macro_play_many)
+        self.a_save_macro = A("Save Current Macro...", self.macro_save)
         self.a_find = A("Find...", lambda: self.find_dialog.show_tab(0, self._selected_text()), S.Find, "find", tip="Find (Ctrl+F)")
         self.a_replace = A("Replace...", lambda: self.find_dialog.show_tab(1, self._selected_text()), "Ctrl+H", "replace", tip="Replace (Ctrl+H)")
         self.a_find_files = A("Find in Files...", lambda: self.find_dialog.show_tab(2, self._selected_text()), "Ctrl+Shift+F")
@@ -444,10 +472,19 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_data)
 
         m = mb.addMenu("Tools")
+        cm = m.addMenu("Compare")
+        for a in (self.a_cmp_tab, self.a_cmp_file, self.a_cmp_saved, self.a_cmp_git):
+            cm.addAction(a)
+        m.addSeparator()
         m.addAction(self.a_paste_image)
         m.addAction(self.a_find_files)
         m.addAction(self.a_reveal)
 
+        rm = mb.addMenu("Run")
+        for a in (self.a_run, self.a_run_sel, self.a_stop, None, self.a_run_cfg):
+            rm.addSeparator() if a is None else rm.addAction(a)
+        self.macro_menu = mb.addMenu("Macro")
+        self.macro_menu.aboutToShow.connect(self._fill_macro_menu)
         self.plugins_menu = mb.addMenu("Plugins")
         self.plugins_menu.aboutToShow.connect(self._fill_plugins_menu)
 
@@ -481,6 +518,8 @@ class MainWindow(QMainWindow):
             l.setProperty("sep", True)
             sb.addPermanentWidget(l)
             return l
+        self.lbl_git = lab()
+        self.lbl_git.hide()
         self.lbl_len = lab()
         self.lbl_pos = lab()
         self.lbl_eol = lab()
@@ -848,6 +887,7 @@ class MainWindow(QMainWindow):
 
     def _workspace_changed(self, path):
         self.settings["workspace"] = path
+        QTimer.singleShot(0, self.refresh_git)
         self.find_dialog.directory.setText(path)
 
     def default_directory(self):
@@ -938,6 +978,7 @@ class MainWindow(QMainWindow):
         self.settings.add_recent(path)
         self.flash(f"Saved {os.path.basename(path)}")
         self.plugins.emit("save", path)
+        QTimer.singleShot(0, self.refresh_git)
         self.results.log(f"Saved {path}")
         self._decorate_tab(page)
         self._update_status()
@@ -1330,6 +1371,314 @@ class MainWindow(QMainWindow):
         d.box.returnPressed.connect(accept_current)
         d.show()
 
+    # ---- compare and Git ----------------------------------------------------------------------------------------------
+    def _text_of(self, page):
+        return page.toPlainText()
+
+    def _show_diff(self, lt, rt, old, new):
+        try:
+            d = diffview.DiffWindow(self, lt, rt, old, new)
+        except ValueError as e:
+            self.flash(str(e))
+            return
+        d.setAttribute(Qt.WA_DeleteOnClose, True)
+        d.show()
+
+    def compare_with_tab(self):
+        page = self.current()
+        others = [p for p in self.all_tabs() if p is not page and not p.is_large]
+        if page is None or page.is_large or not others:
+            self.flash("Open a second document to compare with.")
+            return
+        d = Picker(self, "Compare with", "Choose the document to compare with...",
+                   lambda q: [(self.tab_title(p), p.path or "(unsaved)", p) for p in others])
+        d.chosen.connect(lambda other: self._show_diff(self.tab_title(other), self.tab_title(page), other.toPlainText(), page.toPlainText()))
+        d.show()
+
+    def compare_with_file(self):
+        page = self.current()
+        if page is None or page.is_large:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Compare with", self.default_directory(), "All files (*.*)")
+        if path:
+            try:
+                text = util.read_text_file(path)[0]
+            except OSError as e:
+                self.flash(str(e))
+                return
+            self._show_diff(os.path.basename(path), self.tab_title(page), text, page.toPlainText())
+
+    def compare_with_saved(self):
+        page = self.current()
+        if page is None or page.is_large or not page.path:
+            self.flash("Only a saved document can be compared with its saved version.")
+            return
+        try:
+            text = util.read_text_file(page.path)[0]
+        except OSError as e:
+            self.flash(str(e))
+            return
+        self._show_diff("Saved on disk", "Current (editor)", text, page.toPlainText())
+
+    def compare_with_head(self):
+        page = self.current()
+        if page is None or page.is_large or not page.path or not self._git_root:
+            self.flash("This file is not in a Git repository (or git is not installed).")
+            return
+        old = gitinfo.head_text(self._git_root, page.path)
+        if old is None:
+            self.flash("This file is not tracked by Git yet.")
+            return
+        self._show_diff("Git HEAD", "Current (editor)", old, page.toPlainText())
+
+    def refresh_git(self):
+        """Branch name, workspace colours and change bars. Git runs in a short-lived thread so the window never waits for it."""
+        if not gitinfo.git_exe():
+            return
+        folder = self.workspace.root or (os.path.dirname(self.current().path) if self.current() is not None and self.current().path else "")
+        if not folder or getattr(self, "_git_busy", False):
+            return
+        self._git_busy = True
+        import threading
+
+        def work():
+            root = gitinfo.repo_root(folder)
+            result = (root, gitinfo.status(root), gitinfo.branch(root)) if root else (None, {}, "")
+            self.gitReady.emit(*result)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _git_done(self, root, status, branch):
+        self._git_busy = False
+        self._git_root = root
+        self._git_head = {}
+        self.workspace.model.set_status(status)
+        if root:
+            self.lbl_git.setText(f"\u2387 {branch}" + (f"  \u00b1{len(status)}" if status else ""))
+            self.lbl_git.show()
+            if not self._git_timer.isActive():
+                self._git_timer.start()
+        else:
+            self.lbl_git.hide()
+            self._git_timer.stop()
+        self._update_git_marks()
+
+    def _update_git_marks(self):
+        for p in self.all_tabs():
+            if p.is_large:
+                continue
+            marks = {}
+            if self._git_root and p.path and os.path.normcase(p.path).startswith(os.path.normcase(self._git_root)):
+                if p.path not in self._git_head:
+                    self._git_head[p.path] = gitinfo.head_text(self._git_root, p.path)
+                old = self._git_head[p.path]
+                if old is not None:
+                    marks = gitinfo.line_changes(old, p.toPlainText())
+            if marks != p.git_marks:
+                p.git_marks = marks
+                p.gutter.update()
+
+    # ---- run ------------------------------------------------------------------------------------------------------------
+    def run_file(self, selection=False):
+        page = self.current()
+        ed = self.editor_of(page)
+        if ed is None or page.is_large:
+            return
+        if self._proc is not None:
+            self.flash("Something is already running. Stop it first (Ctrl+F5).")
+            return
+        lang = ed.lang
+        if selection:
+            text = ed.textCursor().selectedText().replace("\u2029", "\n")
+            if not text.strip():
+                self.flash("Select the code to run first.")
+                return
+            ext = lang.exts[0] if lang.exts else ".txt"
+            path = os.path.join(util.sub_dir("run"), "selection" + ext)
+            util.write_text_file(path, text, "UTF-8", "\n")
+        elif page.path:
+            if self._modified(page) and not self.save(page):
+                return
+            path = page.path
+        else:
+            ext = lang.exts[0] if lang.exts else ".txt"
+            path = os.path.join(util.sub_dir("run"), "untitled" + ext)
+            util.write_text_file(path, ed.toPlainText(), "UTF-8", "\n")
+        cmd = runner.command_for(lang.name, path, self.settings["run_commands"])
+        if not cmd:
+            self.flash(f"No way to run {lang.name} files yet. Run > Edit Run Commands... adds one.")
+            return
+        import time as _t
+        self.results.show_console()
+        self.show_results_dock()
+        self.results.write(f"\n> {cmd}\n")
+        prog, args, native = runner.shell_args(cmd)
+        proc = QProcess(self)
+        proc.setWorkingDirectory(os.path.dirname(path))
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONIOENCODING", "utf-8")
+        env.insert("PYTHONUNBUFFERED", "1")
+        proc.setProcessEnvironment(env)
+        proc.setProcessChannelMode(QProcess.MergedChannels)
+        proc.readyReadStandardOutput.connect(lambda: self.results.write(bytes(proc.readAllStandardOutput()).decode("utf-8", "replace")))
+        t0 = _t.time()
+
+        def finished(code, status):
+            self.results.write(bytes(proc.readAllStandardOutput()).decode("utf-8", "replace"))
+            self.results.write(f"\n[exit code {code} in {_t.time() - t0:.2f} s]\n")
+            self._proc = None
+            proc.deleteLater()
+            self.flash(f"Finished with exit code {code}")
+        proc.finished.connect(finished)
+        proc.errorOccurred.connect(lambda err: (self.results.write(f"\n[could not start: {proc.errorString()}]\n"), setattr(self, "_proc", None)) if err == QProcess.FailedToStart else None)
+        self._proc = proc
+        proc.setProgram(prog)
+        if native:
+            proc.setNativeArguments(native)
+        else:
+            proc.setArguments(args)
+        proc.start()
+        self.flash(f"Running {os.path.basename(path)}...")
+
+    def stop_run(self):
+        if self._proc is None:
+            return
+        import subprocess
+        pid = self._proc.processId()
+        if sys.platform == "win32" and pid:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self._proc.kill()
+        self.results.write("\n[stopped]\n")
+
+    def edit_run_commands(self):
+        d = QDialog(self)
+        d.setWindowTitle("Run commands")
+        d.setMinimumSize(560, 360)
+        lay = QVBoxLayout(d)
+        info = QLabel('One per line: <b>Language = command</b>. Use {file} for the script path, e.g.  <code>Python = py -3 "{file}"</code>.<br>'
+                      "Built in: " + ", ".join(sorted(k for k, v in runner.DEFAULTS.items() if v)))
+        info.setWordWrap(True)
+        info.setProperty("muted", True)
+        lay.addWidget(info)
+        from PySide6.QtWidgets import QPlainTextEdit
+        box = QPlainTextEdit()
+        box.setFont(theme.mono(10))
+        box.setPlainText("\n".join(f"{k} = {v}" for k, v in self.settings["run_commands"].items()))
+        lay.addWidget(box, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        lay.addWidget(bb)
+        if d.exec() == QDialog.Accepted:
+            self.settings["run_commands"] = runner.parse_overrides(box.toPlainText())
+            self.settings.save()
+
+    # ---- macros ------------------------------------------------------------------------------------------------------------------
+    def _macro_note(self, action):
+        if self._macro is not None and action not in (self.a_rec, self.a_play, self.a_play_n, self.a_save_macro):
+            self._macro.append(("action", action.text()))
+
+    def macro_toggle(self):
+        ed = self.editor_of(self.current())
+        if self._macro is None:
+            self._macro = []
+            for p in self.all_tabs():
+                self.editor_of(p).macro_rec = self._macro
+            self.a_rec.setText("Stop Recording")
+            self.flash("Recording macro... (Ctrl+Alt+R to stop)")
+        else:
+            steps, self._macro = self._macro, None
+            for p in self.all_tabs():
+                self.editor_of(p).macro_rec = None
+            self._last_macro = steps
+            self.a_rec.setText("Start Recording")
+            self.flash(f"Macro recorded: {len(steps)} step{'s' if len(steps) != 1 else ''}")
+
+    def _macro_run(self, steps, until_end=False, times=1):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+        ed = self.editor_of(self.current())
+        if ed is None or ed.isReadOnly() or not steps:
+            return 0
+        ed.macro_playing = True
+        done = 0
+        try:
+            limit = 200000 if until_end else times
+            while done < limit:
+                before = ed.textCursor().blockNumber()
+                for step in steps:
+                    if step[0] == "key":
+                        mods = Qt.KeyboardModifier(step[2])
+                        for kind in (QEvent.KeyPress, QEvent.KeyRelease):
+                            QApplication.sendEvent(ed, QKeyEvent(kind, step[1], mods, step[3] if kind == QEvent.KeyPress else ""))
+                    else:
+                        act = self._actions_by_text.get(step[1])
+                        if act is not None and act.isEnabled():
+                            act.trigger()
+                done += 1
+                if until_end and (ed.textCursor().blockNumber() >= ed.blockCount() - 1 and ed.textCursor().atBlockEnd()):
+                    break
+                if until_end and ed.textCursor().blockNumber() == before and done > 1 and ed.textCursor().atEnd():
+                    break
+                if done % 50 == 0:
+                    QApplication.processEvents()
+        finally:
+            ed.macro_playing = False
+        return done
+
+    def macro_play(self):
+        if self._macro is not None:
+            self.macro_toggle()
+        if not self._last_macro:
+            self.flash("Nothing recorded yet. Ctrl+Alt+R starts recording.")
+            return
+        self._macro_run(self._last_macro)
+
+    def macro_play_many(self):
+        if not self._last_macro and self._macro is None:
+            self.flash("Nothing recorded yet. Ctrl+Alt+R starts recording.")
+            return
+        if self._macro is not None:
+            self.macro_toggle()
+        from PySide6.QtWidgets import QInputDialog
+        n, ok = QInputDialog.getInt(self, "Run macro", "Times to run it (0 = until the end of the file):", 10, 0, 100000)
+        if ok:
+            ran = self._macro_run(self._last_macro, until_end=(n == 0), times=n)
+            self.flash(f"Macro ran {ran} time{'s' if ran != 1 else ''}")
+
+    def macro_save(self):
+        if not self._last_macro:
+            self.flash("Record a macro first.")
+            return
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Save macro", "Name:")
+        if ok and name.strip():
+            macros = [m for m in self.settings["macros"] if m["name"] != name.strip()]
+            macros.append({"name": name.strip(), "steps": [list(s) for s in self._last_macro]})
+            self.settings["macros"] = macros
+            self.settings.save()
+
+    def _fill_macro_menu(self):
+        m = self.macro_menu
+        m.clear()
+        for a in (self.a_rec, self.a_play, self.a_play_n, self.a_save_macro):
+            m.addAction(a)
+        saved = self.settings["macros"]
+        if saved:
+            m.addSeparator()
+        for mac in saved:
+            sub = m.addMenu(mac["name"])
+            sub.addAction("Play", lambda _=False, s=mac["steps"]: self._macro_run([tuple(x) for x in s]))
+            sub.addAction("Play multiple times...", lambda _=False, s=mac["steps"]: self._play_saved_many(s))
+            sub.addAction("Delete", lambda _=False, n=mac["name"]: self._delete_macro(n))
+
+    def _play_saved_many(self, steps):
+        self._last_macro = [tuple(x) for x in steps]
+        self.macro_play_many()
+
+    def _delete_macro(self, name):
+        self.settings["macros"] = [x for x in self.settings["macros"] if x["name"] != name]
+        self.settings.save()
+
     def _project_root(self):
         page = self.current()
         return self.workspace.root or (os.path.dirname(page.path) if page is not None and page.path else "")
@@ -1689,6 +2038,7 @@ class MainWindow(QMainWindow):
 
     def _content_settled(self):
         self._autosave.start()
+        self._git_marks_timer.start()
         ed = self.editor_of(self.current())
         self.functions.refresh(ed)
         self.images.refresh(ed)

@@ -68,6 +68,9 @@ class CodeEditor(QPlainTextEdit):
         self.marks = []                     # [(start, length)] highlighted by the Mark tab
         self._pix_cache = {}
         self.autocomplete_on = False
+        self.macro_rec = None               # a list while a macro is being recorded
+        self.macro_playing = False
+        self.git_marks = {}                 # {line: 'added' | 'modified' | 'deleted'} against Git HEAD
         self.extra_cursors = []
         self._col_anchor = None
         self.is_hex = False
@@ -202,6 +205,9 @@ class CodeEditor(QPlainTextEdit):
         h = self.fontMetrics().height()
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
+                mark = self.git_marks.get(number + 1) if self.git_marks else None
+                if mark:
+                    p.fillRect(0, top, 3, h if mark != 'deleted' else 3, QColor(theme.c({'added': 'ACCENT', 'modified': 'ORANGE', 'deleted': 'RED'}[mark])))
                 p.setPen(QColor(theme.c("TEXT") if number == cur else theme.c("FAINT")))
                 p.drawText(0, top, w - 12 - self.FOLD_W, h, Qt.AlignRight | Qt.AlignVCenter, self._fmt_num(number + 1 + self.line_base))
                 if number in self.fold_regions:
@@ -525,6 +531,8 @@ class CodeEditor(QPlainTextEdit):
         menu.exec(e.globalPos())
 
     def keyPressEvent(self, e):
+        if self.macro_rec is not None and not self.macro_playing and e.key() not in (Qt.Key_Shift, Qt.Key_Control, Qt.Key_Alt, Qt.Key_Meta):
+            self.macro_rec.append(("key", int(e.key()), int(e.modifiers().value if hasattr(e.modifiers(), 'value') else e.modifiers()), e.text()))
         self._key_press(e)
         self._maybe_complete(e)
 

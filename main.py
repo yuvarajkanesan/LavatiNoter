@@ -641,6 +641,90 @@ def selftest():
         assert not ed.extra_cursors
         ed.document().setModified(False)
 
+    def t_diff_and_git():
+        import subprocess
+        from lavatinoter import diffview, gitinfo
+        left, right, kinds, (added, removed, changed) = diffview.align("a\nb\nc\nd", "a\nB\nc\nd\ne")
+        assert kinds == ["same", "chg", "same", "same", "add"] and (added, removed, changed) == (1, 0, 1), (kinds, added, removed, changed)
+        assert right[-1] == "e" and left[-1] is None
+        win._show_diff("old", "new", "x\ny", "x\nz")
+        dw = [w for w in win.findChildren(diffview.DiffWindow)][-1]
+        dw.step(1)
+        assert dw.starts == [1] and dw.edits[0].textCursor().blockNumber() == 1
+        dw.close()
+        marks = gitinfo.line_changes("a\nb\nc", "a\nB\nc\nd")
+        assert marks == {2: "modified", 4: "added"}, marks
+        if not gitinfo.git_exe():
+            return
+        repo = os.path.join(work, "gitrepo")
+        os.makedirs(repo, exist_ok=True)
+
+        def git(*a):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=repo, check=True, capture_output=True)
+        git("init", "-q")
+        with open(os.path.join(repo, "a.txt"), "w") as f:
+            f.write("one\ntwo\nthree\n")
+        git("add", "."); git("commit", "-qm", "init")
+        with open(os.path.join(repo, "a.txt"), "w") as f:
+            f.write("one\nTWO\nthree\nfour\n")
+        with open(os.path.join(repo, "new.txt"), "w") as f:
+            f.write("x")
+        root = gitinfo.repo_root(repo)
+        assert root and os.path.normcase(root) == os.path.normcase(os.path.normpath(repo)), (root, repo)
+        st = gitinfo.status(root)
+        assert {os.path.basename(k): v for k, v in st.items()} == {"a.txt": "M", "new.txt": "?"}, st
+        assert gitinfo.head_text(root, os.path.join(repo, "a.txt")) == "one\ntwo\nthree\n"
+        win.workspace.set_root(repo)
+        page = win.open_path(os.path.join(repo, "a.txt"))
+        win.refresh_git()
+        for _ in range(100):
+            pump(30)
+            if win._git_root:
+                break
+        assert win._git_root and win.lbl_git.isVisible() is not None
+        win._update_git_marks()
+        assert page.git_marks == {2: "modified", 4: "added"}, page.git_marks
+        assert win.workspace.model.status, "workspace tree has no git status"
+        win.compare_with_head()
+        assert any(isinstance(w, diffview.DiffWindow) for w in win.findChildren(diffview.DiffWindow))
+        for w in win.findChildren(diffview.DiffWindow):
+            w.close()
+        win.workspace.set_root("")
+
+    def t_run_and_macro():
+        from lavatinoter import runner
+        assert runner.command_for("Python", r"C:\x\a.py").endswith('"C:\\x\\a.py"') and runner.command_for("Plain text", "a.txt") is None
+        assert runner.parse_overrides('Python = py -3 "{file}"\n# c\n')["Python"] == 'py -3 "{file}"'
+        if sys.platform == "win32":
+            bat = os.path.join(work, "hello.bat")
+            with open(bat, "w") as f:
+                f.write("@echo off\r\necho hello from run\r\nexit /b 3\r\n")
+            page = win.open_path(bat)
+            win.run_file()
+            for _ in range(200):
+                pump(30)
+                if win._proc is None:
+                    break
+            out = win.results.console.toPlainText()
+            assert "hello from run" in out and "exit code 3" in out, out[-300:]
+            win.run_file(selection=True)                                   # nothing selected: a hint, not a crash
+        # macros: record typing and a command, then play it back
+        ed = win.new_file("")
+        win.tabs.setCurrentWidget(ed)
+        win.macro_toggle()
+        keys(ed, "ab")
+        win.a_dup.trigger()
+        win.macro_toggle()
+        assert [s[0] for s in win._last_macro] == ["key", "key", "action"], win._last_macro
+        assert ed.toPlainText() == "ab\nab", repr(ed.toPlainText())
+        win.macro_play()
+        assert ed.toPlainText() == "ab\nabab\nabab", repr(ed.toPlainText())          # typed ab on the last line, then duplicated it
+        assert win._macro_run(win._last_macro, times=2) == 2
+        win.settings["macros"] = []
+        win.macro_save = lambda: None
+        win._fill_macro_menu()
+        ed.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -650,7 +734,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

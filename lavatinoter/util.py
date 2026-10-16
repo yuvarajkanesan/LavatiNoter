@@ -92,6 +92,8 @@ DEFAULTS = {
     "autocorrect": True,
     "autocomplete": True,
     "autoclose": True,
+    "run_commands": {},
+    "macros": [],
     "font_family": "",
     "file_prefs": {},
     "plugins_enabled": False,
