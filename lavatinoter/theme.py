@@ -336,22 +336,54 @@ def _ic_bold(p):
 
 
 def _ic_italic(p):
-    _glyph(p, "I", 19, italic=True)
+    _glyph(p, "I", 19, bold=True, italic=True)
 
 
 def _ic_underline(p):
-    _glyph(p, "U", 17)
-    p.drawLine(6, 21, 18, 21)
+    _glyph(p, "U", 17, bold=True)
+    p.drawLine(6, 21.5, 18, 21.5)
+
+
+def _size_icon(p, up):
+    f = QFont(ui_family())
+    f.setPixelSize(19)
+    f.setBold(True)
+    p.setFont(f)
+    p.drawText(QRectF(1, 2, 16, 20), Qt.AlignCenter, "A")
+    p.save()
+    p.setBrush(p.pen().color())
+    p.setPen(Qt.NoPen)
+    tri = QPainterPath()
+    if up:
+        tri.moveTo(15.5, 14.5)
+        tri.lineTo(23, 14.5)
+        tri.lineTo(19.25, 8)
+    else:
+        tri.moveTo(15.5, 9.5)
+        tri.lineTo(23, 9.5)
+        tri.lineTo(19.25, 16)
+    tri.closeSubpath()
+    p.drawPath(tri)
+    p.restore()
 
 
 def _ic_textup(p):
-    _glyph(p, "A", 17, dx=-2)
-    _poly(p, [(17, 10), (20, 6), (23, 10)])
+    _size_icon(p, True)
 
 
 def _ic_textdown(p):
-    _glyph(p, "A", 17, dx=-2)
-    _poly(p, [(17, 6), (20, 10), (23, 6)])
+    _size_icon(p, False)
+
+
+def _ic_minimap(p):
+    """A document outline with a bar down the side: the Map / functions / images panel."""
+    p.drawRoundedRect(QRectF(3.5, 4, 17, 16), 2.5, 2.5)
+    p.drawLine(15, 4.5, 15, 19.5)
+    p.drawLine(6.5, 8.5, 12, 8.5)
+    p.drawLine(6.5, 12, 11, 12)
+    p.drawLine(6.5, 15.5, 12, 15.5)
+    p.setBrush(p.pen().color())
+    p.drawRect(QRectF(16.8, 7, 2.4, 5))
 
 
 def _ic_list(p):

@@ -346,7 +346,7 @@ class MainWindow(QMainWindow):
                             "Normally the marks behind bold, italic, underline and size are hidden")
         self.view_ws = A("Show Whitespace and Tabs", self.set_whitespace, None, "pilcrow", True, self.settings["show_whitespace"],
                          "Show whitespace and tabs")
-        self.view_map = A("Panels on the Right (Map, Functions, Images)", self.toggle_map, None, "map", True, self.settings["show_minimap"],
+        self.view_map = A("Panels on the Right (Map, Functions, Images)", self.toggle_map, None, "minimap", True, self.settings["show_minimap"],
                           "Map, functions and images")
         self.show_workspace = A("Workspace Folder", self.toggle_workspace, None, "folder", True, self.settings["show_workspace"])
         self.view_results = A("Results Panel", self.toggle_results, "Ctrl+Shift+J", None, True, False)
