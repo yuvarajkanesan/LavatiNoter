@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QSplitter, QApplication, QCheckBox, QDialog, QDia
                                QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
                                QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget, QComboBox, QLineEdit)
 
-from . import export, lsp, runner, updates
+from . import detect, export, lsp, runner, updates
 from . import APP_NAME, VERSION, diffview, editorconfig, formatter, gitinfo, hexview, plugins, session, symbols, theme, util
 from .editor import CodeEditor
 from .finddialog import FindDialog
@@ -474,6 +474,10 @@ class MainWindow(QMainWindow):
             self.enc_actions[label] = a
 
         m = mb.addMenu("Language")
+        self.a_auto_lang = QAction("Detect Language Automatically", self, checkable=True)
+        self.a_auto_lang.triggered.connect(self.toggle_auto_language)
+        m.addAction(self.a_auto_lang)
+        m.addSeparator()
         self.lang_group = QActionGroup(self)
         self.lang_actions = {}
         for l in LANGS:
@@ -692,6 +696,7 @@ class MainWindow(QMainWindow):
         self._untitled += 1
         ed = self._make_editor()
         ed.title = title or f"new {self._untitled}"
+        ed.lang_auto = language is None
         ed.setPlainText(text)
         ed.document().setModified(bool(text) and title is not None)
         if language:
@@ -854,6 +859,9 @@ class MainWindow(QMainWindow):
         ed.document().setModified(False)
         ed.document().clearUndoRedo() if hasattr(ed.document(), "clearUndoRedo") else None
         ed.detect_language()
+        if ed.lang is PLAIN and os.path.splitext(path)[1].lower() not in (".txt", ".text", ".nfo", ".csv", ".tsv"):
+            ed.lang_auto = True                               # no known extension: look at the text
+            self._auto_detect(ed)
         self._apply_file_settings(ed)
         ed.moveCursor(QTextCursor.Start)
         return self._add_page(ed)
@@ -1168,9 +1176,41 @@ class MainWindow(QMainWindow):
     def set_language(self, name):
         ed = self.editor_of(self.current())
         if ed is not None:
+            ed.lang_auto = False                               # an explicit choice always wins
             ed.set_language(lang_by_name(name))
             self._update_status()
             self.functions.refresh(ed)
+
+    def _auto_detect(self, page):
+        """While a document is in auto mode, its language follows the text: paste Python into a new tab and it is Python."""
+        if page is None or page.is_large or not getattr(page, "lang_auto", False):
+            return
+        rev = page.document().revision()
+        if rev == page._auto_rev or page.length() > 1_500_000:
+            return
+        page._auto_rev = rev
+        text = page.toPlainText()
+        name = detect.guess_language(text)
+        if name is None:
+            if len(text.strip()) < 12 and page.lang is not PLAIN:
+                page.set_language(PLAIN)                       # emptied: back to plain text
+                self._update_status()
+            return
+        lang = lang_by_name(name)
+        if lang is not page.lang and lang is not PLAIN:
+            page.set_language(lang)
+            self._update_status()
+            self.flash(f"Detected {lang.name}")
+
+    def toggle_auto_language(self, on=None):
+        ed = self.editor_of(self.current())
+        if ed is None:
+            return
+        ed.lang_auto = self.a_auto_lang.isChecked()
+        ed._auto_rev = -1
+        if ed.lang_auto:
+            self._auto_detect(ed)
+        self._update_status()
 
     def _eol_popup(self):
         m = QMenu(self)
@@ -2315,6 +2355,7 @@ class MainWindow(QMainWindow):
 
     def _content_settled(self):
         self._autosave.start()
+        self._auto_detect(self.current())
         self._lsp_sync(self.current())
         self._git_marks_timer.start()
         ed = self.editor_of(self.current())
@@ -2375,6 +2416,7 @@ class MainWindow(QMainWindow):
         a = self.lang_actions.get(page.lang.name)
         if a:
             a.setChecked(True)
+        self.a_auto_lang.setChecked(bool(getattr(page, "lang_auto", False)))
         e = self.enc_actions.get(page.encoding)
         if e:
             e.setChecked(True)
@@ -2400,7 +2442,7 @@ class MainWindow(QMainWindow):
                 continue
             cur = p.textCursor()
             entry = {"path": p.path, "title": p.title, "encoding": p.encoding, "eol": p.eol, "lang": p.lang.name,
-                     "line": cur.blockNumber() + 1, "col": cur.positionInBlock(), "scroll": p.verticalScrollBar().value(),
+                     "line": cur.blockNumber() + 1, "col": cur.positionInBlock(), "scroll": p.verticalScrollBar().value(), "auto": p.lang_auto,
                      "bookmarks": [b.blockNumber() + 1 for b in p._bookmarked_blocks()]}
             if self._modified(p) or (not p.path and p.length()):
                 text = p.toPlainText()
@@ -2429,6 +2471,7 @@ class MainWindow(QMainWindow):
                     ed.path = p if p and os.path.isfile(p) else None
                     ed.encoding = entry.get("encoding", "UTF-8")
                     ed.eol = entry.get("eol", "\r\n")
+                    ed.lang_auto = bool(entry.get("auto", not p))
                     ed.setPlainText(entry["text"])
                     ed.detect_language() if ed.path else ed.set_language(lang_by_name(entry.get("lang", "Plain text")))
                     # unsaved "new N" text shows as modified, like Notepad++

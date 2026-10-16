@@ -68,6 +68,8 @@ class CodeEditor(QPlainTextEdit):
         self.marks = []                     # [(start, length)] highlighted by the Mark tab
         self._pix_cache = {}
         self.autocomplete_on = False
+        self.lang_auto = False             # the language follows what the text looks like (new documents, unknown extensions)
+        self._auto_rev = -1
         self.diagnostics = []              # [(line, col, end line, end col, severity, message)] from a language server
         self.hover_provider = None         # callable (line, col) -> text, set by the window when a language server is running
         self.macro_rec = None               # a list while a macro is being recorded

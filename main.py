@@ -1017,6 +1017,41 @@ def selftest():
         assert ed.toPlainText() == "Hi How are you option to extend the issues\nsecond line here\nthird line\n", repr(ed.toPlainText())
         ed.document().setModified(False)
 
+    def t_detect_language():
+        from PySide6.QtCore import QMimeData
+        from lavatinoter.detect import guess_language
+        py = "import os\n\ndef greet(name):\n    print('hi', name)\n\nif __name__ == '__main__':\n    greet('x')\n"
+        assert guess_language(py) == "Python"
+        assert guess_language('{"a": [1, 2]}') == "JSON" and guess_language("hello there, how are you today?\nfine thanks\n") is None
+        ed = win.new_file("")                                          # a new tab: paste code into it
+        assert ed.lang.name == "Plain text" and ed.lang_auto
+        mime = QMimeData()
+        mime.setText(py)
+        ed.insertFromMimeData(mime)
+        win._content_settled()
+        assert ed.lang.name == "Python", ed.lang.name
+        assert "Python" in win.lbl_lang.text() or "Detected" in win.lbl_lang.text()
+        ed.setPlainText("<!DOCTYPE html>\n<html>\n<body><div>hi</div></body>\n</html>\n")
+        win._content_settled()
+        assert ed.lang.name == "HTML / XML", ed.lang.name                      # it follows the text while in auto mode
+        win.set_language("Markdown")                                           # an explicit choice sticks
+        ed.setPlainText(py)
+        win._content_settled()
+        assert ed.lang.name == "Markdown" and not ed.lang_auto
+        win.a_auto_lang.setChecked(True)
+        win.toggle_auto_language()
+        assert ed.lang.name == "Python" and ed.lang_auto
+        ed.document().setModified(False)
+        # a file with no known extension is detected by its content, a .txt file is left alone
+        p1 = os.path.join(work, "script_noext")
+        with open(p1, "w") as f:
+            f.write("#!/usr/bin/env python3\nimport sys\nprint(sys.argv)\n")
+        assert win.open_path(p1).lang.name == "Python"
+        p2 = os.path.join(work, "notes_detect.txt")
+        with open(p2, "w") as f:
+            f.write(py)
+        assert win.open_path(p2).lang.name == "Plain text"
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -1026,7 +1061,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:
