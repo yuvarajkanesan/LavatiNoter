@@ -13,7 +13,8 @@ maximum extent permitted by law, Lavati Softwares is not liable for any loss of 
 from use of the software.
 
 3. PRIVACY
-LavatiNoter does not collect telemetry, makes no network connections and needs no account. Settings, the session
+LavatiNoter does not collect telemetry and needs no account. It makes no network connections, except the update check you start yourself
+(Help > Check for Updates) or turn on in Preferences, which asks github.com for the newest release and sends nothing about you. Settings, the session
 backup (your open tabs and unsaved text) and pasted pictures of unsaved documents are stored on this computer only,
 in %APPDATA%\LavatiNoter.
 

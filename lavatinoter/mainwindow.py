@@ -7,11 +7,11 @@ import time
 from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence,
                            QTextCursor)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QFormLayout,
+from PySide6.QtWidgets import (QSplitter, QApplication, QCheckBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QFormLayout,
                                QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
                                QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget, QComboBox, QLineEdit)
 
-from . import export, runner
+from . import export, lsp, runner, updates
 from . import APP_NAME, VERSION, diffview, editorconfig, formatter, gitinfo, hexview, plugins, session, symbols, theme, util
 from .editor import CodeEditor
 from .finddialog import FindDialog
@@ -55,6 +55,8 @@ class PreferencesDialog(QDialog):
         self.large.setValue(settings["large_file_mb"])
         self.images = QLineEdit(settings["image_folder"])
         self.images.setToolTip("Pasted pictures are saved in this folder next to the document")
+        self.autoupdate = QCheckBox("Check for a new version once a day (contacts github.com only)")
+        self.autoupdate.setChecked(settings["auto_update_check"])
         self.restore = QCheckBox("Reopen my files and keep unsaved text when I quit")
         self.restore.setChecked(settings["restore_session"])
         form.addRow("Theme", self.theme)
@@ -65,6 +67,7 @@ class PreferencesDialog(QDialog):
         form.addRow("Open files larger than", self.large)
         form.addRow("Folder for pasted pictures", self.images)
         form.addRow("", self.restore)
+        form.addRow("", self.autoupdate)
         note = QLabel("Files above the size limit open in large file mode: read-only, instant, and limited to a small window of memory.")
         note.setWordWrap(True)
         note.setProperty("muted", True)
@@ -85,6 +88,7 @@ class PreferencesDialog(QDialog):
         name = self.images.text().strip().strip("\\/")
         s["image_folder"] = name or "images"
         s["restore_session"] = self.restore.isChecked()
+        s["auto_update_check"] = self.autoupdate.isChecked()
 
 
 class MainWindow(QMainWindow):
@@ -94,6 +98,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings = settings
         self._proc = None
+        self.lsp_clients = {}
         self._macro = None                   # steps being recorded
         self._last_macro = []
         self._actions_by_text = {}
@@ -121,7 +126,12 @@ class MainWindow(QMainWindow):
         plus.clicked.connect(lambda _=False: self.new_file())
         self.plus = plus
         self.tabs.setCornerWidget(plus, Qt.TopRightCorner)
-        self.setCentralWidget(self.tabs)
+        self.main_split = QSplitter(Qt.Horizontal)
+        self.main_split.setChildrenCollapsible(False)
+        self.main_split.setHandleWidth(1)
+        self.main_split.addWidget(self.tabs)
+        self.split_pane = None
+        self.setCentralWidget(self.main_split)
 
         self._build_docks()
         self._build_actions()
@@ -158,6 +168,8 @@ class MainWindow(QMainWindow):
         QApplication.instance().applicationStateChanged.connect(self._app_state)
         if settings["plugins_enabled"]:
             QTimer.singleShot(0, self.reload_plugins)
+        if settings["auto_update_check"] and time.time() - float(settings["last_update_check"] or 0) > 86400:
+            QTimer.singleShot(8000, lambda: self.check_updates(False))
 
     # ---- construction ---------------------------------------------------------------------------------------------
     def _dock(self, title, widget, area, name):
@@ -317,6 +329,9 @@ class MainWindow(QMainWindow):
         self.a_preview = A("Print Preview...", lambda: self.print_doc(preview=True))
         self.a_pdf = A("Export as PDF...", self.export_pdf)
         self.a_html = A("Export as HTML...", self.export_html)
+        self.a_split = A("Clone Tab to Split View", self.open_split, "Ctrl+\\", None, tip="Shows the same document in a second pane beside it")
+        self.a_split_flip = A("Switch Split Direction", self.flip_split)
+        self.a_split_close = A("Close Split View", self.close_split)
         self.a_find = A("Find...", lambda: self.find_dialog.show_tab(0, self._selected_text()), S.Find, "find", tip="Find (Ctrl+F)")
         self.a_replace = A("Replace...", lambda: self.find_dialog.show_tab(1, self._selected_text()), "Ctrl+H", "replace", tip="Replace (Ctrl+H)")
         self.a_find_files = A("Find in Files...", lambda: self.find_dialog.show_tab(2, self._selected_text()), "Ctrl+Shift+F")
@@ -345,12 +360,14 @@ class MainWindow(QMainWindow):
                                "Fixes obvious typos in text and Markdown when you finish a word. Backspace right after takes it back.")
         self.a_complete = A("Word Autocomplete", self.set_complete, None, None, True, self.settings["autocomplete"],
                             "Suggests words from this document, the language's keywords and common English words while you type")
+        self.a_lsp = A("Language Servers (LSP)...", self.edit_lsp, None, None, tip="Use an installed language server for go to definition, hover and error underlines")
         self.a_prefs = A("Preferences...", self.preferences, "Ctrl+,")
         self.a_next_tab = A("Next Tab", lambda: self.step_tab(1), "Ctrl+PgDown")
         self.a_prev_tab = A("Previous Tab", lambda: self.step_tab(-1), "Ctrl+PgUp")
         self.a_next_tab2 = A("Next Tab", lambda: self.step_tab(1), "Ctrl+Tab")
         self.a_prev_tab2 = A("Previous Tab", lambda: self.step_tab(-1), "Ctrl+Shift+Tab")
         self.a_about = A("About LavatiNoter", self.about)
+        self.a_update = A("Check for Updates...", lambda: self.check_updates(True))
         self.a_data = A("Open Settings Folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(util.data_dir())))
         self.a_diag = A("Copy Diagnostic Info", self.copy_diagnostics)
         for a in (self.a_zoom_in2, self.a_next_tab2, self.a_prev_tab2, self.a_next_tab, self.a_prev_tab):
@@ -431,6 +448,9 @@ class MainWindow(QMainWindow):
             m.addSeparator() if a is None else m.addAction(a)
 
         m = mb.addMenu("View")
+        sm = m.addMenu("Split View")
+        for a in (self.a_split, self.a_split_flip, self.a_split_close):
+            sm.addAction(a)
         fm = m.addMenu("Code Folding")
         for a in (self.a_fold, self.a_unfold, self.a_fold_all, self.a_fold_funcs, self.a_unfold_all):
             fm.addAction(a)
@@ -467,6 +487,7 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_spell)
         m.addAction(self.a_autocorrect)
         m.addAction(self.a_complete)
+        m.addAction(self.a_lsp)
         m.addAction(self.a_autoclose)
         th = m.addMenu("Theme")
         self.theme_group = QActionGroup(self)
@@ -499,6 +520,7 @@ class MainWindow(QMainWindow):
         self.window_menu.aboutToShow.connect(self._fill_window_menu)
 
         m = mb.addMenu("?")
+        m.addAction(self.a_update)
         m.addAction(self.a_about)
         m.addAction(self.a_diag)
 
@@ -564,6 +586,8 @@ class MainWindow(QMainWindow):
             elif hasattr(page, "editor"):
                 page.editor.restyle()
         self.workspace.restyle()
+        if self.split_pane is not None:
+            self.split_editor.restyle()
         self.minimap.update()
         for i in range(self.tabs.count()):
             self._decorate_tab(self.tabs.widget(i))
@@ -654,6 +678,7 @@ class MainWindow(QMainWindow):
         ed.imagePasted.connect(self._image_pasted)
         ed.imageActivated.connect(lambda path: ImagePreview(path, self).exec())
         ed.definitionRequested.connect(lambda w: self.go_to_definition(w))
+        ed.hover_provider = lambda line, col, e=ed: self._lsp_hover(e, line, col)
         return ed
 
     def _modification_changed(self, page):
@@ -677,6 +702,8 @@ class MainWindow(QMainWindow):
     def close_tab(self, page, force=False):
         if page is None:
             return True
+        if self.split_pane is not None and self.split_page is page:
+            self.close_split()
         if not force and self._modified(page) and not self.settings["restore_session"]:
             r = QMessageBox.question(self, "Unsaved changes", f'Save changes to "{self.tab_title(page)}"?',
                                      QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
@@ -691,6 +718,9 @@ class MainWindow(QMainWindow):
                 return False
             if r == QMessageBox.Save and not self.save(page):
                 return False
+        st = getattr(page, "_lsp_state", None)
+        if st is not None and page.path:
+            st[0].close_doc(lsp.path_to_uri(page.path))
         i = self.tabs.indexOf(page)
         self.tabs.removeTab(i)
         if page.is_large:
@@ -1737,6 +1767,175 @@ class MainWindow(QMainWindow):
             export.export_html(path, text, lang, title)
             self.flash(f"Exported {os.path.basename(path)}")
 
+    # ---- split view ----------------------------------------------------------------------------------------------------
+    def open_split(self):
+        page = self.current()
+        if page is None or page.is_large or getattr(page, "is_hex", False):
+            self.flash("Split view needs a normal (editable) document.")
+            return
+        self.close_split()
+        clone = CodeEditor()
+        clone.apply_font(self.settings["font_size"])
+        clone.share_document_from(page)
+        clone.zoomRequested.connect(self.zoom)
+        clone.set_show_whitespace(self.settings["show_whitespace"])
+        clone.autoclose_on = self.settings["autoclose"]
+        pane = QFrame()
+        pane.setStyleSheet(f"QFrame#splitPane {{ border-left: 1px solid {theme.c('BORDER')}; border-top: 1px solid {theme.c('BORDER')}; }}")
+        pane.setObjectName("splitPane")
+        lay = QVBoxLayout(pane)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        head = QHBoxLayout()
+        head.setContentsMargins(12, 4, 6, 4)
+        title = QLabel(f"SPLIT VIEW  \u2014  {self.tab_title(page)}")
+        title.setProperty("heading", True)
+        head.addWidget(title, 1)
+        for icon_name, tip, fn in (("replace", "Switch direction", self.flip_split), ("close", "Close split view", self.close_split)):
+            b = QToolButton()
+            b.setIcon(theme.icon(icon_name, theme.c("MUTED"), 16))
+            b.setAutoRaise(True)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            head.addWidget(b)
+        lay.addLayout(head)
+        lay.addWidget(clone, 1)
+        self.split_pane = pane
+        self.split_editor = clone
+        self.split_page = page
+        self.main_split.addWidget(pane)
+        self.main_split.setSizes([700, 500])
+        clone.setFocus()
+
+    def flip_split(self):
+        if self.split_pane is not None:
+            self.main_split.setOrientation(Qt.Vertical if self.main_split.orientation() == Qt.Horizontal else Qt.Horizontal)
+
+    def close_split(self):
+        if self.split_pane is not None:
+            self.split_pane.setParent(None)
+            self.split_pane.deleteLater()
+            self.split_pane = self.split_editor = self.split_page = None
+
+    # ---- updates -----------------------------------------------------------------------------------------------------
+    def check_updates(self, manual):
+        if getattr(self, "_update_thread", None) is not None and self._update_thread.isRunning():
+            return
+        t = updates.UpdateCheck(self)
+        self._update_thread = t
+        t.finished_check.connect(lambda res, err: self._update_done(res, err, manual))
+        self.flash("Checking for updates...") if manual else None
+        t.start()
+
+    def _update_done(self, res, err, manual):
+        self.settings["last_update_check"] = time.time()
+        self.settings.save()
+        if res is None:
+            if manual:
+                QMessageBox.information(self, "Check for updates", f"Could not reach GitHub ({err}).\nCheck your connection and try again.")
+            return
+        if res["newer"]:
+            box = QMessageBox(QMessageBox.Information, "Update available", f"{APP_NAME} {res['tag']} is available (you have {VERSION}).")
+            if res["notes"]:
+                box.setDetailedText(res["notes"])
+            go = box.addButton("Open download page", QMessageBox.AcceptRole)
+            box.addButton("Later", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is go:
+                QDesktopServices.openUrl(QUrl(res["url"]))
+        elif manual:
+            QMessageBox.information(self, "Check for updates",
+                                    f"You have the newest version ({VERSION})." if not res.get("none") else
+                                    f"No releases are published yet. You have version {VERSION}.")
+
+    # ---- language servers ----------------------------------------------------------------------------------------------------
+    def lsp_client_for(self, page):
+        if not self.settings["lsp_enabled"] or page is None or page.is_large or not page.path:
+            return None
+        name = page.lang.name
+        cmd = lsp.detect_server(name, self.settings["lsp_servers"])
+        if not cmd:
+            return None
+        root = self._project_root() or os.path.dirname(page.path)
+        key = (name, root)
+        client = self.lsp_clients.get(key)
+        if client is None or client.proc.state() == 0:
+            if client is not None and client.error:
+                return None                                              # the server could not start: do not retry on every keystroke
+            client = lsp.LspClient(cmd, root, lsp.LANGUAGE_ID.get(name, name.lower()), self)
+            client.diagnostics.connect(self._lsp_diagnostics)
+            self.lsp_clients[key] = client
+            client.start()
+        return client
+
+    def _lsp_sync(self, page):
+        if page is None or page.is_large or not page.path:
+            return
+        client = self.lsp_client_for(page)
+        if client is None:
+            return
+        uri = lsp.path_to_uri(page.path)
+        st = getattr(page, "_lsp_state", None)
+        rev = page.document().revision()
+        if st is None or st[0] is not client:
+            client.open_doc(uri, page.toPlainText(), 1)
+            page._lsp_state = (client, 1, rev)
+        elif st[2] != rev:
+            client.change_doc(uri, page.toPlainText(), st[1] + 1)
+            page._lsp_state = (client, st[1] + 1, rev)
+
+    def _lsp_diagnostics(self, uri, items):
+        page = self.find_open(lsp.uri_to_path(uri))
+        if page is None or page.is_large:
+            return
+        page.diagnostics = [(d["range"]["start"]["line"], d["range"]["start"]["character"], d["range"]["end"]["line"],
+                             d["range"]["end"]["character"], d.get("severity", 1), d.get("message", "")) for d in items if "range" in d]
+        page.refresh_selections()
+        if page is self.current() and items:
+            self.flash(f"{len(items)} problem{'s' if len(items) != 1 else ''} reported by the language server")
+
+    def _lsp_hover(self, ed, line, col):
+        st = getattr(ed, "_lsp_state", None)
+        if st is None or not ed.path:
+            return ""
+        return st[0].hover(lsp.path_to_uri(ed.path), line, col)
+
+    def edit_lsp(self):
+        d = QDialog(self)
+        d.setWindowTitle("Language servers")
+        d.setMinimumSize(600, 420)
+        lay = QVBoxLayout(d)
+        on = QCheckBox("Use language servers (starts the programs below when you open a file of that language)")
+        on.setChecked(self.settings["lsp_enabled"])
+        lay.addWidget(on)
+        found = [f"{name}: {' '.join(cmd)}" for name in sorted(lsp.DEFAULT_SERVERS) for cmd in [lsp.detect_server(name)] if cmd]
+        info = QLabel("Installed servers found on this computer:<br>" + ("<br>".join(found) if found else "none (install one, e.g. <code>npm i -g pyright</code>)")
+                      + '<br><br>To use another program, add a line: <code>Python = pylsp</code> or <code>Go = "C:\\tools\\gopls.exe"</code>')
+        info.setWordWrap(True)
+        info.setProperty("muted", True)
+        lay.addWidget(info)
+        from PySide6.QtWidgets import QPlainTextEdit
+        box = QPlainTextEdit()
+        box.setFont(theme.mono(10))
+        box.setPlainText("\n".join(f"{k} = {v}" for k, v in self.settings["lsp_servers"].items()))
+        lay.addWidget(box, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        lay.addWidget(bb)
+        if d.exec() == QDialog.Accepted:
+            self.settings["lsp_enabled"] = on.isChecked()
+            self.settings["lsp_servers"] = runner.parse_overrides(box.toPlainText())
+            self.settings.save()
+            for c in self.lsp_clients.values():
+                c.stop()
+            self.lsp_clients = {}
+            for p in self.all_tabs():
+                p._lsp_state = None
+                if not p.is_large:
+                    p.diagnostics = []
+            self._lsp_sync(self.current())
+
     def _project_root(self):
         page = self.current()
         return self.workspace.root or (os.path.dirname(page.path) if page is not None and page.path else "")
@@ -1750,6 +1949,18 @@ class MainWindow(QMainWindow):
         if not name:
             self.flash("Put the caret on a name first")
             return
+        client = self.lsp_client_for(page)
+        if client is not None and page.path:
+            self._lsp_sync(page)
+            cur = ed.textCursor()
+            line0, col0 = cur.blockNumber(), cur.positionInBlock()
+            if name and not ed.textCursor().hasSelection():                        # a Ctrl+click already moved the caret onto the name
+                pass
+            locs = client.definition(lsp.path_to_uri(page.path), line0, col0)
+            if locs:
+                self._nav_push()
+                self._show_location(locs[0][0], locs[0][1] + 1, name)
+                return
         found = []
         for ln, text in symbols.definitions_in_text(ed.lang, ed.toPlainText(), name):
             found.append((self.tab_key(page), ln, text))
@@ -2021,6 +2232,8 @@ class MainWindow(QMainWindow):
             self.editor_of(p).apply_font(size)
             if p.is_large:
                 p.show_window()
+        if self.split_pane is not None:
+            self.split_editor.apply_font(size)
         self.flash(f"Font size {size}")
 
     def preferences(self):
@@ -2096,6 +2309,7 @@ class MainWindow(QMainWindow):
 
     def _content_settled(self):
         self._autosave.start()
+        self._lsp_sync(self.current())
         self._git_marks_timer.start()
         ed = self.editor_of(self.current())
         self.functions.refresh(ed)
@@ -2111,6 +2325,7 @@ class MainWindow(QMainWindow):
         self._update_status()
         self._update_title()
         self.refresh_documents()
+        self._lsp_sync(page)
         if page is not None and page.is_large:
             self._ram_timer.start()
             self._update_ram()
@@ -2241,6 +2456,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e: QCloseEvent):
         self.find_dialog.stop()
+        for c in self.lsp_clients.values():
+            c.stop()
         if self.settings["restore_session"]:
             self.save_session()
         else:

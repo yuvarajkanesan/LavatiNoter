@@ -24,6 +24,7 @@ type "%TEMP%\lavatinoter-selftest.log"
 echo.
 echo Built: dist\LavatiNoter\LavatiNoter.exe
 
+for /f "delims=" %%v in ('python -c "from lavatinoter import VERSION; print(VERSION)"') do set APPVER=%%v
 set ISCC=
 if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe
 if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe
@@ -32,11 +33,11 @@ rem Code signing (removes the "Unknown publisher" warning): set LAVATI_SIGNTOOL 
 if defined LAVATI_SIGNTOOL call :signapp || goto :err
 if not defined ISCC goto :noiscc
 if defined LAVATI_SIGNTOOL goto :signedinstaller
-"%ISCC%" installer.iss || goto :err
+"%ISCC%" /DAppVersion=%APPVER% installer.iss || goto :err
 goto :installerdone
 :signedinstaller
 call set ISIGN=%%LAVATI_SIGNTOOL:"=$q%%
-"%ISCC%" /DSign=1 "/Slavatisign=%ISIGN%" installer.iss || goto :err
+"%ISCC%" /DAppVersion=%APPVER% /DSign=1 "/Slavatisign=%ISIGN%" installer.iss || goto :err
 :installerdone
 echo Installer: dist\LavatiNoter-Setup.exe
 exit /b 0

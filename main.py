@@ -797,6 +797,89 @@ def selftest():
         assert len(got[0][0].strip().split("\n")) == 50
         win.close_tab(page, force=True)
 
+    def t_split_view():
+        ed = win.new_file("alpha\nbeta\n")
+        win.open_split()
+        clone = win.split_editor
+        assert clone.document() is ed.document() and win.split_pane is not None
+        keys(clone, "X")                                                   # typing in one view shows up in the other
+        assert ed.toPlainText().startswith("X") or "X" in ed.toPlainText(), ed.toPlainText()
+        c = ed.textCursor()
+        c.movePosition(c.MoveOperation.End)
+        c.insertText("gamma")
+        assert "gamma" in clone.toPlainText()
+        win.flip_split()
+        assert win.main_split.orientation() == Qt.Vertical
+        win.close_split()
+        assert win.split_pane is None
+        win.open_split()
+        win.close_tab(ed, force=True)                                      # closing the document closes its split view
+        assert win.split_pane is None
+
+    def t_updates_portable():
+        import io
+        import urllib.error
+        from lavatinoter import updates
+        assert updates.parse_version("v1.2.3-beta") == (1, 2, 3)
+        assert updates.is_newer("v0.3", "0.2") and not updates.is_newer("0.2.0", "0.2") and updates.is_newer("1.0", "0.9.9")
+
+        class Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        body = b'{"tag_name": "v9.9", "html_url": "https://example.test/r", "body": "notes"}'
+        r = updates.fetch_latest(lambda req, timeout=0: Resp(body))
+        assert r["newer"] and r["tag"] == "v9.9" and r["url"].endswith("/r")
+
+        def not_found(req, timeout=0):
+            raise urllib.error.HTTPError("u", 404, "nf", {}, None)
+        r = updates.fetch_latest(not_found)
+        assert r["none"] and not r["newer"]
+        # portable mode: a portable.txt next to the program keeps data beside it
+        import importlib
+        from lavatinoter import util as u
+        assert os.path.isdir(u.data_dir())
+
+    def t_lsp():
+        from lavatinoter import lsp
+        p = lsp.Parser()
+        msgs = p.feed(lsp.encode({"id": 1, "result": 5})[:10]) + p.feed(lsp.encode({"id": 1, "result": 5})[10:] + lsp.encode({"method": "x"}))
+        assert msgs == [{"id": 1, "result": 5}, {"method": "x"}], msgs               # messages split across reads are reassembled
+        assert lsp.hover_text({"contents": {"kind": "markdown", "value": " hi "}}) == "hi"
+        assert lsp.hover_text({"contents": ["a", {"value": "b"}]}) == "a\n\nb"
+        assert lsp.split_command('"C:\\Program Files\\x.exe" --stdio -v') == ["C:\\Program Files\\x.exe", "--stdio", "-v"]
+        assert lsp.uri_to_path(lsp.path_to_uri(os.path.join(work, "a b.py"))) == os.path.normpath(os.path.join(work, "a b.py"))
+        assert lsp.detect_server("Nonexistent language") is None
+        if getattr(sys, "frozen", False):
+            return                                                                   # the stand-in server needs a Python interpreter
+        fake = os.path.join(os.path.dirname(os.path.abspath(lsp.__file__)), "_fake_lsp.py")
+        win.settings["lsp_enabled"] = True
+        win.settings["lsp_servers"] = {"Python": f'"{sys.executable}" "{fake}"'}
+        f = os.path.join(work, "lsp_demo.py")
+        with open(f, "w") as fh:
+            fh.write("def alpha():\n    x = BAD\n")
+        page = win.open_path(f)
+        for _ in range(200):
+            pump(30)
+            if page.diagnostics:
+                break
+        assert page.diagnostics and page.diagnostics[0][:4] == (1, 8, 1, 11), page.diagnostics          # the server's error is underlined
+        assert page._diagnostic_at(1, 9) == "found BAD"
+        assert win._lsp_hover(page, 0, 5) == "**fake** hover"
+        c = page.textCursor()
+        c.setPosition(page.toPlainText().index("x = BAD"))
+        page.setTextCursor(c)
+        win.go_to_definition("alpha")                                                  # the server says: line 1, column 4
+        assert page.textCursor().blockNumber() == 0 and page.textCursor().selectedText() == "alpha"
+        win.settings["lsp_enabled"] = False
+        for cl in win.lsp_clients.values():
+            cl.stop()
+        win.lsp_clients = {}
+        page._lsp_state = None
+        win.close_tab(page, force=True)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -806,7 +889,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

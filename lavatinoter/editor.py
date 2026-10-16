@@ -68,6 +68,8 @@ class CodeEditor(QPlainTextEdit):
         self.marks = []                     # [(start, length)] highlighted by the Mark tab
         self._pix_cache = {}
         self.autocomplete_on = False
+        self.diagnostics = []              # [(line, col, end line, end col, severity, message)] from a language server
+        self.hover_provider = None         # callable (line, col) -> text, set by the window when a language server is running
         self.macro_rec = None               # a list while a macro is being recorded
         self.macro_playing = False
         self.git_marks = {}                 # {line: 'added' | 'modified' | 'deleted'} against Git HEAD
@@ -304,6 +306,7 @@ class CodeEditor(QPlainTextEdit):
             sels.append(line)
         sels += self._image_hide_selections()
         sels += self._extra_cursor_selections()
+        sels += self._diag_selections()
         sels += self._mark_selections()
         sels += self._smart_selections()
         sels += self._bracket_selections()
@@ -1640,6 +1643,45 @@ class CodeEditor(QPlainTextEdit):
             p.fillRect(r.x(), r.y(), 2, r.height(), QColor(theme.c("ACCENT")))
         p.end()
 
+    def share_document_from(self, other):
+        """Makes this editor another view of `other`'s document (split view): same text, undo history and folds."""
+        self.setDocument(other.document())
+        self.highlighter = other.highlighter
+        self.document().contentsChange.connect(self._on_edit)
+        self.document().contentsChanged.connect(self._fold_timer.start)
+        self.path, self.lang, self.encoding, self.eol = other.path, other.lang, other.encoding, other.eol
+        self.tab_width, self.use_spaces = other.tab_width, other.use_spaces
+        self.set_tab_width(other.tab_width)
+        self.setLineWrapMode(QPlainTextEdit.NoWrap)              # a shared layout can only wrap for one view
+        self.fold_regions = dict(other.fold_regions)
+        self._has_flags = other._has_flags
+        self.git_marks = other.git_marks
+        self._update_gutter_width()
+        self.refresh_selections()
+
+    def _diag_selections(self):
+        out = []
+        doc = self.document()
+        for sl, sc, el, ec, sev, msg in self.diagnostics[:500]:
+            b1, b2 = doc.findBlockByNumber(sl), doc.findBlockByNumber(el)
+            if not b1.isValid() or not b2.isValid():
+                continue
+            s = QTextEdit.ExtraSelection()
+            s.format.setUnderlineStyle(QTextCharFormat.WaveUnderline)
+            s.format.setUnderlineColor(QColor(theme.c("RED") if sev == 1 else theme.c("ORANGE") if sev == 2 else theme.c("BLUE")))
+            s.cursor = QTextCursor(doc)
+            s.cursor.setPosition(b1.position() + min(sc, max(0, b1.length() - 1)))
+            end = b2.position() + min(ec, max(0, b2.length() - 1))
+            s.cursor.setPosition(max(end, s.cursor.position() + 1), QTextCursor.KeepAnchor)
+            out.append(s)
+        return out
+
+    def _diagnostic_at(self, line, col):
+        for sl, sc, el, ec, sev, msg in self.diagnostics:
+            if (sl, sc) <= (line, col) <= (el, max(ec, sc + 1)):
+                return msg
+        return ""
+
     def toggle_comment(self):
         prefix = self.lang.comment
         if not prefix:
@@ -1905,6 +1947,15 @@ class CodeEditor(QPlainTextEdit):
                     else:
                         QToolTip.showText(e.globalPos(), f"Image not found: {ref}", self)
                     return True
+            msg = self._diagnostic_at(cur.blockNumber(), col) if self.diagnostics else ""
+            if not msg and self.hover_provider is not None and not self.read_only_window:
+                try:
+                    msg = self.hover_provider(cur.blockNumber(), col) or ""
+                except Exception:  # noqa: BLE001 - a language server problem must never break the editor
+                    msg = ""
+            if msg:
+                QToolTip.showText(e.globalPos(), msg[:1200], self)
+                return True
             QToolTip.hideText()
         return super().event(e)
 

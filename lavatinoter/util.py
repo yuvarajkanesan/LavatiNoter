@@ -12,8 +12,13 @@ from . import APP_NAME
 # ---- paths --------------------------------------------------------------------------------------
 def data_dir():
     """Per-user data folder (settings, session backups, pasted images of unsaved documents)."""
-    base = os.environ.get("LAVATINOTER_HOME") or os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"),
-                                                              APP_NAME)
+    base = os.environ.get("LAVATINOTER_HOME")
+    if not base:
+        exe_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if os.path.isfile(os.path.join(exe_dir, "portable.txt")):          # portable build: everything stays next to the program
+            base = os.path.join(exe_dir, "data")
+        else:
+            base = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), APP_NAME)
     os.makedirs(base, exist_ok=True)
     return base
 
@@ -92,6 +97,10 @@ DEFAULTS = {
     "autocorrect": True,
     "autocomplete": True,
     "autoclose": True,
+    "lsp_enabled": False,
+    "lsp_servers": {},
+    "auto_update_check": False,
+    "last_update_check": 0,
     "run_commands": {},
     "macros": [],
     "font_family": "",

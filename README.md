@@ -29,3 +29,9 @@ Settings and session backups live in `%APPDATA%\LavatiNoter`. Code signing: set 
 - **Go to Definition** (F12 or Ctrl+click), Find All References (Shift+F12), Go to Symbol (Ctrl+R), Navigate Back (Alt+Left) - pattern based, no language server.
 - **Plugins**: Python files in `%APPDATA%\LavatiNoter\plugins` with a `register(api)` function add commands and event hooks. Off by default;
   Plugins > Install Sample Plugins copies examples from `sample_plugins/`. Plugins run with the editor's rights - only enable ones you trust.
+
+## More features (0.2)
+Command palette (Ctrl+Shift+P) and Quick Open (Ctrl+P; `:` line, `@` symbol) - multiple cursors (Ctrl+Alt+D, Alt+click, Alt+Shift+drag) - split view -
+compare files and Git changes (side by side) - Git status colours and change bars - Run (F5) and macros - print / PDF / HTML export - hex view -
+`.editorconfig` - themes (Monokai, Solarized, High Contrast) - large files: Follow and Filter lines - optional language servers (Settings > Language
+Servers) for go to definition, hover and error underlines - optional update check and a portable zip (`make_portable.bat`).

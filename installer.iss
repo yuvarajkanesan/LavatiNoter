@@ -6,7 +6,7 @@
 ; build.bat passes the real version (/DAppVersion=...); the other defines let tools\make_test_installers.ps1 build
 ; throw-away "older" and "newer" installers for the upgrade / downgrade tests
 #ifndef AppVersion
-  #define AppVersion "0.1"
+  #define AppVersion "0.2"
 #endif
 #ifndef PayloadDir
   #define PayloadDir "dist\LavatiNoter"
