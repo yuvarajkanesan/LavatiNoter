@@ -124,7 +124,24 @@ def run_folders(args, out):
     return 0 if not (counts[foldercmp.DIFFERENT] or counts[foldercmp.LEFT_ONLY] or counts[foldercmp.RIGHT_ONLY]) else 1
 
 
+def _attach_console():
+    """The packaged app has no console window, so sys.stdout is None: join the console it was started from (if any)."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.AttachConsole(-1)
+        sys.stdout = sys.stdout or open("CONOUT$", "w", encoding="utf-8")
+        sys.stderr = sys.stderr or open("CONOUT$", "w", encoding="utf-8")
+    except (OSError, AttributeError):
+        import io
+        sys.stdout = sys.stdout or io.StringIO()
+        sys.stderr = sys.stderr or io.StringIO()
+
+
 def run(args, out=None, err=None):
+    if out is None or err is None:
+        _attach_console()
     out, err = out or sys.stdout, err or sys.stderr
     try:
         if "--compare" in args:

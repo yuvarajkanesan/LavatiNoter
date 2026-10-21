@@ -1647,8 +1647,11 @@ def selftest():
             p.close_file()
     say("SELFTEST OK" if ok else "SELFTEST FAILED")
     log.close()
-    sys.stdout.flush()
-    sys.stderr.flush()
+    for stream in (sys.stdout, sys.stderr):         # a windowed exe has no console: these are None there
+        try:
+            stream.flush()
+        except (AttributeError, OSError, ValueError):
+            pass
     os._exit(0 if ok else 1)            # skips Qt's tear-down of every window and thread, which can crash on exit after the checks passed
 
 
