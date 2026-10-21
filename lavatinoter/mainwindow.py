@@ -270,6 +270,8 @@ class MainWindow(QMainWindow):
         self.a_cut = A("Cut", lambda: self._ed_call("cut"), S.Cut, "cut")
         self.a_copy = A("Copy", lambda: self._ed_call("copy"), S.Copy, "copy")
         self.a_paste = A("Paste", lambda: self._ed_call("paste"), S.Paste, "paste")
+        self.a_copy_marks = A("Copy with Formatting Marks", lambda: self._ed_call("copy_with_marks"), "Ctrl+Alt+C", None,
+                              tip="Copies the text as written, with the ** _ <u> marks, for Markdown or GitHub")
         self.a_paste_image = A("Paste Image from Clipboard", self.paste_image, "Ctrl+Shift+V", "pasteimage",
                                tip="Paste a picture: it is saved next to the document and linked in (Ctrl+Shift+V)")
         self.a_select_all = A("Select All", lambda: self._ed_call("selectAll"), S.SelectAll)
@@ -406,7 +408,7 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_exit)
 
         m = mb.addMenu("Edit")
-        for a in (self.a_undo, self.a_redo, None, self.a_cut, self.a_copy, self.a_paste, self.a_paste_image,
+        for a in (self.a_undo, self.a_redo, None, self.a_cut, self.a_copy, self.a_copy_marks, self.a_paste, self.a_paste_image,
                   self.a_select_all, None, self.a_dup, self.a_del_line, self.a_up, self.a_down, None, self.a_comment,
                   self.a_indent, self.a_outdent):
             m.addSeparator() if a is None else m.addAction(a)

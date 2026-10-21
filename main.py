@@ -1166,6 +1166,50 @@ def selftest():
             if not p2.is_large:
                 p2.document().setModified(False)
 
+    def t_clean_copy():
+        from PySide6.QtGui import QGuiApplication
+        from lavatinoter import richtext
+        raw = "hjhkjhkjhk**jhjk**hjkhkj"
+        assert richtext.strip_marks(raw) == "hjhkjhkjhkjhjkhjkhkj"
+        assert richtext.strip_marks("**a** _b_ <u>c</u>\nplain_text snake_case") == "a b c\nplain_text snake_case"
+        h = richtext.marks_to_html('x <u>**y**</u> <span style="font-size:20px">z</span>', fragment=True)
+        assert "<b>" in h and "<u>" in h and "font-size:20px" in h and "**" not in h and "_" not in h, h
+        ed = win.new_file(raw)
+        c = ed.textCursor()
+        c.setPosition(0)
+        c.setPosition(len(raw), QTextCursor.KeepAnchor)
+        ed.setTextCursor(c)
+        ed.copy()
+        clip = QGuiApplication.clipboard()
+        assert clip.text() == "hjhkjhkjhkjhjkhjkhkj", clip.text()                   # other programs get clean text ...
+        assert "<b>" in clip.mimeData().html() and "**" not in clip.mimeData().html()    # ... or real bold
+        # pasting back into LavatiNoter keeps the formatting; into a code file it is just the plain text
+        other = win.new_file("")
+        other.paste()
+        assert other.toPlainText() == raw, other.toPlainText()
+        from lavatinoter.highlighter import PYTHON
+        code = win.new_file("")
+        code.set_language(PYTHON)
+        code.lang_auto = False
+        code.paste()
+        assert code.toPlainText() == "hjhkjhkjhkjhjkhjkhkj", code.toPlainText()
+        # text without formatting copies exactly as before; "copy with marks" keeps them
+        ed.setPlainText("no marks here")
+        ed.selectAll()
+        ed.copy()
+        assert clip.text() == "no marks here" and not clip.mimeData().hasFormat(ed.MARKS_MIME)
+        ed.setPlainText(raw)
+        ed.selectAll()
+        ed.copy_with_marks()
+        assert clip.text() == raw
+        # exports show the formatting, not the marks
+        from lavatinoter import export
+        from lavatinoter.highlighter import lang_by_name
+        doc = export.styled_document(raw, lang_by_name("Plain text"))
+        assert doc.toPlainText() == "hjhkjhkjhkjhjkhjkhkj", doc.toPlainText()
+        for e2 in (ed, other, code):
+            e2.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -1175,7 +1219,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

@@ -15,6 +15,12 @@ def styled_document(text, lang, font_pt=10):
         f = QFont(theme.mono_family(), font_pt)
         f.setStyleHint(QFont.Monospace)
         doc.setDefaultFont(f)
+        from . import richtext
+        from .highlighter import RICH_LANGS
+        if lang.name in RICH_LANGS and richtext.has_marks(text):      # formatted text: real bold / italic / sizes, no marks
+            doc.setDefaultFont(QFont(theme.ui_family(), font_pt))
+            doc.setHtml(richtext.marks_to_html(text))
+            return doc
         doc.setPlainText(text)
         h = Highlighter(doc)
         h.set_lang(lang)

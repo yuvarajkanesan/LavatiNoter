@@ -6,11 +6,11 @@ import re
 import time
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QStringListModel, Qt, QTimer, Signal
-from PySide6.QtGui import (QAction, QColor, QPen, QFont, QFontMetricsF, QImage, QPainter, QPixmap, QTextCharFormat, QTextCursor, QTextFormat,
+from PySide6.QtGui import (QGuiApplication, QAction, QColor, QPen, QFont, QFontMetricsF, QImage, QPainter, QPixmap, QTextCharFormat, QTextCursor, QTextFormat,
                            QTextOption, QTextBlockUserData)
 from PySide6.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
-from . import folding
+from . import folding, richtext
 from . import spell as spellmod
 from . import theme, util
 from .finddialog_pos import PosMap
@@ -1930,10 +1930,41 @@ class CodeEditor(QPlainTextEdit):
         super().wheelEvent(e)
 
     # ---- pictures: paste, drop, hover preview ------------------------------------------------------------------
+    MARKS_MIME = "application/x-lavatinoter-text"
+
+    def createMimeDataFromSelection(self):
+        """What Copy / Cut / drag put on the clipboard. For formatted text the marks never leak into other programs: they get the
+        visible text (plain) and real bold / italic / underline / size (HTML). LavatiNoter itself also gets the original text
+        with its marks, so pasting back here keeps the formatting."""
+        md = super().createMimeDataFromSelection()
+        if self.read_only_window or not self.format_supported():
+            return md
+        raw = self.textCursor().selectedText().replace("\u2029", "\n")
+        if raw and richtext.has_marks(raw):
+            from PySide6.QtCore import QMimeData
+            md = QMimeData()                                  # Qt's own object answers from the selection and ignores what is set on it
+            md.setText(richtext.strip_marks(raw))
+            md.setHtml(richtext.marks_to_html(raw))
+            md.setData(self.MARKS_MIME, raw.encode("utf-8"))
+        return md
+
+    def copy_with_marks(self):
+        """Copies the text exactly as written, marks included (for pasting into Markdown, GitHub, a chat ...)."""
+        from PySide6.QtCore import QMimeData
+        raw = self.textCursor().selectedText().replace("\u2029", "\n")
+        if raw:
+            md = QMimeData()
+            md.setText(raw)
+            QGuiApplication.clipboard().setMimeData(md)
+
     def canInsertFromMimeData(self, src):
         return src.hasImage() or src.hasUrls() or src.hasText()
 
     def insertFromMimeData(self, src):
+        if src.hasFormat(self.MARKS_MIME) and self.format_supported() and not self.isReadOnly():
+            self.textCursor().insertText(bytes(src.data(self.MARKS_MIME)).decode("utf-8"))     # formatted text pasted back keeps its formatting
+            self.ensureCursorVisible()
+            return
         has_text = src.hasText() and bool(src.text().strip())
         if src.hasImage() and not has_text:
             img = src.imageData()
