@@ -55,6 +55,10 @@ class PreferencesDialog(QDialog):
         self.large.setValue(settings["large_file_mb"])
         self.images = QLineEdit(settings["image_folder"])
         self.images.setToolTip("Pasted pictures are saved in this folder next to the document")
+        self.copystyle = QComboBox()
+        self.copystyle.addItem("Keep bold / italic / underline as styled characters", "styled")
+        self.copystyle.addItem("Plain text only (formatting stays in rich-text programs)", "clean")
+        self.copystyle.setCurrentIndex(max(0, self.copystyle.findData(settings["copy_style"])))
         self.autoupdate = QCheckBox("Check for a new version once a day (contacts github.com only)")
         self.autoupdate.setChecked(settings["auto_update_check"])
         self.restore = QCheckBox("Reopen my files and keep unsaved text when I quit")
@@ -66,6 +70,7 @@ class PreferencesDialog(QDialog):
         form.addRow("", self.spaces)
         form.addRow("Open files larger than", self.large)
         form.addRow("Folder for pasted pictures", self.images)
+        form.addRow("When I copy formatted text into a plain-text program", self.copystyle)
         form.addRow("", self.restore)
         form.addRow("", self.autoupdate)
         note = QLabel("Files above the size limit open in large file mode: read-only, instant, and limited to a small window of memory.")
@@ -88,6 +93,7 @@ class PreferencesDialog(QDialog):
         name = self.images.text().strip().strip("\\/")
         s["image_folder"] = name or "images"
         s["restore_session"] = self.restore.isChecked()
+        s["copy_style"] = self.copystyle.currentData()
         s["auto_update_check"] = self.autoupdate.isChecked()
 
 
@@ -272,6 +278,7 @@ class MainWindow(QMainWindow):
         self.a_paste = A("Paste", lambda: self._ed_call("paste"), S.Paste, "paste")
         self.a_copy_marks = A("Copy with Formatting Marks", lambda: self._ed_call("copy_with_marks"), "Ctrl+Alt+C", None,
                               tip="Copies the text as written, with the ** _ <u> marks, for Markdown or GitHub")
+        self.a_copy_plain = A("Copy as Plain Text", lambda: self._ed_call("copy_plain"), None, None, tip="Copies the visible text only: no marks and no styled characters")
         self.a_paste_image = A("Paste Image from Clipboard", self.paste_image, "Ctrl+Shift+V", "pasteimage",
                                tip="Paste a picture: it is saved next to the document and linked in (Ctrl+Shift+V)")
         self.a_select_all = A("Select All", lambda: self._ed_call("selectAll"), S.SelectAll)
@@ -408,7 +415,7 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_exit)
 
         m = mb.addMenu("Edit")
-        for a in (self.a_undo, self.a_redo, None, self.a_cut, self.a_copy, self.a_copy_marks, self.a_paste, self.a_paste_image,
+        for a in (self.a_undo, self.a_redo, None, self.a_cut, self.a_copy, self.a_copy_marks, self.a_copy_plain, self.a_paste, self.a_paste_image,
                   self.a_select_all, None, self.a_dup, self.a_del_line, self.a_up, self.a_down, None, self.a_comment,
                   self.a_indent, self.a_outdent):
             m.addSeparator() if a is None else m.addAction(a)
@@ -683,6 +690,7 @@ class MainWindow(QMainWindow):
         ed.set_show_whitespace(self.settings["show_whitespace"])
         ed.set_spellcheck(self.settings["spellcheck"], self.settings["autocorrect"])
         ed.autocomplete_on = self.settings["autocomplete"]
+        ed.copy_styled = self.settings["copy_style"] == "styled"
         ed.autoclose_on = self.settings["autoclose"]
         ed.show_guides = self.settings["indent_guides"]
         ed.zoomRequested.connect(self.zoom)
@@ -2396,6 +2404,7 @@ class MainWindow(QMainWindow):
             ed.set_tab_width(self.settings["tab_width"])
             ed.use_spaces = self.settings["use_spaces"]
             ed.image_folder = self.settings["image_folder"]
+            ed.copy_styled = self.settings["copy_style"] == "styled"
         self.set_font_size(self.settings["font_size"])
 
     def about(self):

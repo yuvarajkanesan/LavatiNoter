@@ -68,6 +68,7 @@ class CodeEditor(QPlainTextEdit):
         self.marks = []                     # [(start, length)] highlighted by the Mark tab
         self._pix_cache = {}
         self.autocomplete_on = False
+        self.copy_styled = True            # plain-text copy of formatted text uses bold / italic look-alike characters
         self.lang_auto = False             # the language follows what the text looks like (new documents, unknown extensions)
         self._auto_rev = -1
         self.diagnostics = []              # [(line, col, end line, end col, severity, message)] from a language server
@@ -1943,10 +1944,19 @@ class CodeEditor(QPlainTextEdit):
         if raw and richtext.has_marks(raw):
             from PySide6.QtCore import QMimeData
             md = QMimeData()                                  # Qt's own object answers from the selection and ignores what is set on it
-            md.setText(richtext.strip_marks(raw))
+            md.setText(richtext.to_unicode(raw) if self.copy_styled else richtext.strip_marks(raw))
             md.setHtml(richtext.marks_to_html(raw))
             md.setData(self.MARKS_MIME, raw.encode("utf-8"))
         return md
+
+    def copy_plain(self):
+        """Copies the visible text only: no marks and no styled characters."""
+        from PySide6.QtCore import QMimeData
+        raw = self.textCursor().selectedText().replace("\u2029", "\n")
+        if raw:
+            md = QMimeData()
+            md.setText(richtext.strip_marks(raw))
+            QGuiApplication.clipboard().setMimeData(md)
 
     def copy_with_marks(self):
         """Copies the text exactly as written, marks included (for pasting into Markdown, GitHub, a chat ...)."""
@@ -1961,8 +1971,10 @@ class CodeEditor(QPlainTextEdit):
         return src.hasImage() or src.hasUrls() or src.hasText()
 
     def insertFromMimeData(self, src):
-        if src.hasFormat(self.MARKS_MIME) and self.format_supported() and not self.isReadOnly():
-            self.textCursor().insertText(bytes(src.data(self.MARKS_MIME)).decode("utf-8"))     # formatted text pasted back keeps its formatting
+        if src.hasFormat(self.MARKS_MIME) and not self.isReadOnly():
+            raw = bytes(src.data(self.MARKS_MIME)).decode("utf-8")
+            # formatted text pasted back into a text / Markdown / HTML tab keeps its formatting; into code it is the plain text
+            self.textCursor().insertText(raw if self.format_supported() else richtext.strip_marks(raw))
             self.ensureCursorVisible()
             return
         has_text = src.hasText() and bool(src.text().strip())

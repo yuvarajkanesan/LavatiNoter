@@ -325,7 +325,6 @@ def selftest():
         c = ed.textCursor()
         c.setPosition(4)                                                           # inside the opening **
         ed.setTextCursor(c)
-        assert ed.textCursor().position() in (2, 4) or True
         c.setPosition(9)                                                           # just after the closing **
         ed.setTextCursor(c)
         keys(ed, "")
@@ -1181,7 +1180,15 @@ def selftest():
         ed.setTextCursor(c)
         ed.copy()
         clip = QGuiApplication.clipboard()
-        assert clip.text() == "hjhkjhkjhkjhjkhjkhkj", clip.text()                   # other programs get clean text ...
+        styled = "hjhkjhkjhk" + "".join(chr(0x1D41A + ord(c) - 97) for c in "jhjk") + "hjkhkj"      # the word in bold look-alike letters
+        assert clip.text() == styled, clip.text()                                  # plain-text programs still see it in bold, without the **
+        assert "**" not in clip.text() and richtext.strip_marks(raw) == "hjhkjhkjhkjhjkhjkhkj"
+        ed.copy_styled = False
+        ed.copy()
+        assert clip.text() == "hjhkjhkjhkjhjkhjkhkj", clip.text()                   # ... or clean text, if that is the setting
+        ed.copy_styled = True
+        ed.copy()
+        assert clip.text() == styled
         assert "<b>" in clip.mimeData().html() and "**" not in clip.mimeData().html()    # ... or real bold
         # pasting back into LavatiNoter keeps the formatting; into a code file it is just the plain text
         other = win.new_file("")
@@ -1193,6 +1200,11 @@ def selftest():
         code.lang_auto = False
         code.paste()
         assert code.toPlainText() == "hjhkjhkjhkjhjkhjkhkj", code.toPlainText()
+        from lavatinoter import richtext as rt
+        assert rt.to_unicode("**Hi 1**") == "𝐇𝐢 𝟏", rt.to_unicode("**Hi 1**")
+        assert rt.to_unicode("_h_") == "ℎ" and rt.to_unicode("<u>ab</u>") == "a̲b̲"
+        assert rt.marks_to_html("**ab** cd", fragment=True) == "<b>ab</b> cd"        # one tag per run, not one per letter
+        ed.copy_plain()
         # text without formatting copies exactly as before; "copy with marks" keeps them
         ed.setPlainText("no marks here")
         ed.selectAll()
