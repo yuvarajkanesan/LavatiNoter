@@ -567,14 +567,15 @@ class MainWindow(QMainWindow):
     def _para_button(self, icon, tip, fn=None, menu=None, checkable=False):
         b = QToolButton()
         dd = menu is not None and fn is None                  # a menu-only button gets its arrow drawn inside the icon
-        b.setIcon(theme.icon(icon, theme.c("MUTED"), 20, dropdown=dd))
+        b.setIcon(theme.icon(icon, theme.c("MUTED"), 24, dropdown=dd))
         b.setToolTip(tip)
         b.setCheckable(checkable)
         if menu is not None:
             b.setMenu(menu)
             b.setPopupMode(QToolButton.MenuButtonPopup if fn else QToolButton.InstantPopup)
             b.setStyleSheet("QToolButton::menu-indicator { image: none; width: 0px; }" if dd else
-                            "QToolButton::menu-button { width: 12px; border: none; }")
+                            "QToolButton { padding-right: 17px; } QToolButton::menu-button { width: 15px; border: none; subcontrol-origin: padding; "
+                            "subcontrol-position: right center; }")
         if fn is not None:
             b.clicked.connect(lambda _=False, f=fn: f())
         self._para_buttons.append((b, icon, dd))
@@ -587,7 +588,7 @@ class MainWindow(QMainWindow):
         tb = self.addToolBar("Paragraph")
         tb.setObjectName("para-toolbar")
         tb.setMovable(False)
-        tb.setIconSize(QSize(20, 20))
+        tb.setIconSize(QSize(24, 24))
         call = lambda name, *a: (lambda: self._para_call(name, *a))
         # bullets and numbering: the button applies the last style, the arrow lists the styles
         bm = QMenu(self)
@@ -711,7 +712,7 @@ class MainWindow(QMainWindow):
             a.setIcon(theme.icon(icon, k("MUTED")))
         self.plus.setIcon(theme.icon("plus", k("MUTED"), 18))
         for b, icon, dd in getattr(self, "_para_buttons", []):
-            b.setIcon(theme.icon(icon, k("MUTED"), 20, dropdown=dd))
+            b.setIcon(theme.icon(icon, k("MUTED"), 24, dropdown=dd))
         self.results.close_btn.setIcon(theme.icon("close", k("MUTED"), 16))
         theme.set_titlebar(self)
         for page in self.all_tabs():

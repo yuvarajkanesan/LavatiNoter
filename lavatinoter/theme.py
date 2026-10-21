@@ -552,11 +552,11 @@ def icon(name, color=None, size=20, dropdown=False):
     _pen(p, color)
     if dropdown:
         p.save()
-        p.translate(0.5, 0.5)
-        p.scale(0.82, 0.82)
+        p.translate(0.3, 0.3)
+        p.scale(0.76, 0.76)
         _ICONS.get(name, _ic_file)(p)
         p.restore()
-        p.drawPolyline([QPointF(17.6, 19.4), QPointF(20.4, 22.2), QPointF(23.2, 19.4)])
+        p.drawPolyline([QPointF(19.4, 18.6), QPointF(21.6, 20.8), QPointF(23.8, 18.6)])
     else:
         _ICONS.get(name, _ic_file)(p)
     p.end()
