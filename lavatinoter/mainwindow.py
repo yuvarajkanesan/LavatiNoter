@@ -180,8 +180,7 @@ class MainWindow(QMainWindow):
         if settings["workspace"] and os.path.isdir(settings["workspace"]):
             self.workspace.set_root(settings["workspace"])
         QApplication.instance().applicationStateChanged.connect(self._app_state)
-        if settings["plugins_enabled"]:
-            QTimer.singleShot(0, self.reload_plugins)
+        QTimer.singleShot(0, self.reload_plugins)                  # the built-in plugins are always loaded
         if settings["auto_update_check"] and time.time() - float(settings["last_update_check"] or 0) > 86400:
             QTimer.singleShot(8000, lambda: self.check_updates(False))
 
@@ -2241,10 +2240,7 @@ class MainWindow(QMainWindow):
             self.removeAction(a)
             a.deleteLater()
         self._plugin_actions = []
-        if not self.settings["plugins_enabled"]:
-            self.plugins.plugins, self.plugins.handlers = [], {}
-            return
-        for p in self.plugins.load_all():
+        for p in self.plugins.load_all(include_user=self.settings["plugins_enabled"]):
             p["actions"] = []
             for title, fn, shortcut in p["commands"]:
                 a = QAction(title, self)
@@ -2254,32 +2250,42 @@ class MainWindow(QMainWindow):
                 self.addAction(a)
                 p["actions"].append(a)
                 self._plugin_actions.append(a)
-        loaded = [p for p in self.plugins.plugins if not p["error"]]
-        self.flash(f"{len(loaded)} plugin{'s' if len(loaded) != 1 else ''} loaded" + (f", {len(self.plugins.plugins) - len(loaded)} failed" if len(loaded) != len(self.plugins.plugins) else ""))
+        failed = [p for p in self.plugins.plugins if p["error"]]
+        if failed or self.settings["plugins_enabled"]:
+            mine = [p for p in self.plugins.plugins if not p["builtin"] and not p["error"]]
+            self.flash(f"{len(mine)} of your plugins loaded" + (f", {len(failed)} failed (see the Console)" if failed else ""))
 
     def install_sample_plugins(self):
         copied = plugins.install_samples()
-        self.flash(f"Installed {len(copied)} sample plugin{'s' if len(copied) != 1 else ''}" if copied else "The sample plugins are already installed")
+        self.flash("Template copied to your plugins folder" if copied else "The template is already in your plugins folder")
         if self.settings["plugins_enabled"]:
             self.reload_plugins()
 
     def _fill_plugins_menu(self):
         m = self.plugins_menu
         m.clear()
-        en = m.addAction("Enable Plugins")
+        built = [p for p in self.plugins.plugins if p["builtin"]]
+        for p in built:
+            sub = m.addMenu(p["name"])
+            sub.setToolTipsVisible(True)
+            for a in p.get("actions", []):
+                sub.addAction(a)
+        m.addSeparator()
+        en = m.addAction("Enable My Plugins (from the plugins folder)")
         en.setCheckable(True)
         en.setChecked(self.settings["plugins_enabled"])
         en.triggered.connect(lambda checked: self.set_plugins_enabled(checked))
         m.addAction("Reload Plugins", self.reload_plugins).setEnabled(self.settings["plugins_enabled"])
-        m.addAction("Install Sample Plugins", self.install_sample_plugins)
+        m.addAction("Install Plugin Template", self.install_sample_plugins)
         m.addAction("Open Plugins Folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(plugins.plugins_dir())))
         m.addSeparator()
         if not self.settings["plugins_enabled"]:
-            m.addAction("(plugins are off)").setEnabled(False)
+            m.addAction("(your own plugins are off)").setEnabled(False)
             return
-        if not self.plugins.plugins:
-            m.addAction("(no plugins installed)").setEnabled(False)
-        for p in self.plugins.plugins:
+        mine = [p for p in self.plugins.plugins if not p["builtin"]]
+        if not mine:
+            m.addAction("(no plugins of your own yet)").setEnabled(False)
+        for p in mine:
             if p["error"]:
                 m.addAction(f"{p['file']}  (failed - see Console)").setEnabled(False)
                 continue

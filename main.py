@@ -532,12 +532,33 @@ def selftest():
         win.plugins.emit("save", "x.txt")
         assert "saved x.txt" in win.results.console.toPlainText()
         win._fill_plugins_menu()
-        assert plugins.install_samples()                                                           # sample plugins are installed
-        win.reload_plugins()
-        assert any(p["name"] == "Word count" and not p["error"] for p in win.plugins.plugins), win.plugins.plugins
+        assert plugins.install_samples()                                                           # the template is copied
         win.settings["plugins_enabled"] = False
         win.reload_plugins()
-        assert win.plugins.plugins == []
+        assert not [p for p in win.plugins.plugins if not p["builtin"]]                            # your own plugins are off ...
+        built = {p["name"]: p for p in win.plugins.plugins if p["builtin"]}
+        assert not any(p["error"] for p in built.values()), [p["error"] for p in built.values() if p["error"]]
+        assert {"Text tools", "Encoders and hashes", "Converters", "Generators", "Line tools", "Markdown tools"} <= set(built), set(built)   # ... the built-in ones are always there
+        # a few built-in commands, run through the same actions the menu uses
+        def run(plugin, title, text):
+            ed.setPlainText(text)
+            ed.selectAll()
+            act = next(a for a in built[plugin]["actions"] if a.text() == title)
+            act.trigger()
+            return ed.toPlainText()
+        assert run("Encoders and hashes", "Base64: encode", "hello") == "aGVsbG8="
+        assert run("Encoders and hashes", "Base64: decode", "aGVsbG8=") == "hello"
+        assert run("Encoders and hashes", "URL: encode", "a b&c") == "a%20b%26c"
+        assert run("Text tools", "Case: snake_case", "Hello World Again") == "hello_world_again"
+        assert run("Text tools", "Case: camelCase", "hello big world") == "helloBigWorld"
+        assert run("Line tools", "Reverse the order of lines", "1\n2\n3") == "3\n2\n1"
+        assert run("Line tools", "Number lines", "a\nb") == "1. a\n2. b"
+        assert run("Converters", "CSV: to Markdown table", "a,b\n1,2").splitlines()[0].startswith("| a")
+        assert run("Converters", "Timestamp: Unix time to date", "1700000000") == "2023-11-14 22:13:20 UTC"
+        assert run("Markdown tools", "Align table columns", "|a|bb|\n|-|-|\n|ccc|d|").splitlines()[0] == "| a   | bb  |"
+        ed.setPlainText("")
+        next(a for a in built["Generators"]["actions"] if a.text() == "Insert UUID").trigger()
+        assert len(ed.toPlainText()) == 36 and ed.toPlainText().count("-") == 4
         ed.document().setModified(False)
 
     def t_editorconfig_hex_themes():

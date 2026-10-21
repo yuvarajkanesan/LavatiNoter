@@ -8,7 +8,7 @@ from PyInstaller.utils.hooks import collect_data_files
 sys.path.insert(0, os.path.abspath("tools"))
 import trim  # noqa: E402
 
-datas = [("fonts", "fonts"), ("assets", "assets"), ("sample_plugins", "sample_plugins")] + collect_data_files("spellchecker")
+datas = [("fonts", "fonts"), ("assets", "assets"), ("sample_plugins", "sample_plugins"), ("builtin_plugins", "builtin_plugins")] + collect_data_files("spellchecker")
 
 a = Analysis(
     ["main.py"],
