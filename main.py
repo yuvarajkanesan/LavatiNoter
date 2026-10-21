@@ -6,6 +6,10 @@ Usage:
     LavatiNoter --version
     LavatiNoter --selftest            exercise the editor, search, large file mode and picture paste once
     LavatiNoter --help
+    LavatiNoter --compare A B [--report FILE] [--format html|text|unified|context|normal] [--ignore-case] [--ignore-ws MODE] [--ignore-regex RX]
+    LavatiNoter --merge BASE LEFT RIGHT --output FILE
+    LavatiNoter --compare-folders A B [--report FILE]
+                                      compare / merge without opening a window; exit code 0 = same, 1 = differences, 2 = error
 """
 import getpass
 import json
@@ -1540,6 +1544,90 @@ def selftest():
         ed.document().setModified(False)
         code.document().setModified(False)
 
+    def t_compare_dialogs():
+        import time as _t
+        from lavatinoter import comparedialogs as cd
+        from lavatinoter import diffview
+        tmp = tempfile.mkdtemp(prefix="lnoter-cmp-")
+
+        def wr(rel, text):
+            p = os.path.join(tmp, rel)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(text)
+            return p
+        # three-way merge from open documents
+        base = win.new_file("a\nb\nc\n")
+        left = win.new_file("A\nb\nc\n")
+        right = win.new_file("a\nb\nC\n")
+        for pg in (base, left, right):
+            pg.document().setModified(False)
+        sources = win._tab_sources()
+        assert len(sources) >= 3
+        dlg = cd.MergeSetupDialog(win, sources[-3:], tmp)
+        for k, key in enumerate(("base", "left", "right")):
+            dlg.rows[key].box.setCurrentIndex(k)
+        dlg._accept()
+        assert dlg.result_sides and dlg.result_sides["left"].text.startswith("A")
+        w = win._show_diff(None, None, None, None, left_side=dlg.result_sides["left"], right_side=dlg.result_sides["right"],
+                           base_side=dlg.result_sides["base"], mode="3way")
+        pump(200)
+        assert w is not None and w.mode == "3way"
+        assert w.out_ed.toPlainText().replace("\r", "").startswith("A\nb\nC"), w.out_ed.toPlainText()
+        # conflicting edits leave markers that can be stepped through
+        w.close()
+        # a comparison session survives a save and a re-open
+        a = wr("s/a.txt", "one\ntwo\nthree\n")
+        b = wr("s/b.txt", "one\nTWO\nthree\n")
+        w = win._show_diff(None, None, None, None, left_side=diffview.file_side(a), right_side=diffview.file_side(b))
+        pump(100)
+        sess = os.path.join(tmp, "x.lncmp")
+        with open(sess, "w", encoding="utf-8") as f:
+            f.write(diffview.cc.session_to_json(w.session_data()))
+        w.close()
+        before = len(QApplication.topLevelWidgets())
+        win.open_comparison_session(sess)
+        pump(100)
+        assert [x for x in QApplication.topLevelWidgets() if isinstance(x, diffview.DiffWindow) and x.isVisible()], "session did not reopen"
+        for x in QApplication.topLevelWidgets():
+            if isinstance(x, diffview.DiffWindow):
+                x.close()
+        # folder compare
+        wr("fa/same.txt", "x")
+        wr("fb/same.txt", "x")
+        wr("fa/diff.txt", "1")
+        wr("fb/diff.txt", "2")
+        wr("fa/only_left.txt", "l")
+        fd = cd.FolderCompareDialog(win, win, os.path.join(tmp, "fa"), os.path.join(tmp, "fb"))
+        fd.start()
+        end = _t.time() + 10
+        while fd.go_btn.isEnabled() is False and _t.time() < end:
+            pump(20)
+        assert fd.go_btn.isEnabled()
+        names = {fd.tree.topLevelItem(i).text(0): fd.tree.topLevelItem(i).text(1) for i in range(fd.tree.topLevelItemCount())}
+        assert names == {"diff.txt": "different", "only_left.txt": "left only"}, names
+        fd.same_cb.setChecked(True)
+        assert fd.tree.topLevelItemCount() == 3
+        fd._open_item(fd.tree.topLevelItem(0))
+        pump(100)
+        assert [x for x in QApplication.topLevelWidgets() if isinstance(x, diffview.DiffWindow) and x.isVisible()]
+        for x in QApplication.topLevelWidgets():
+            if isinstance(x, diffview.DiffWindow):
+                x.close()
+        fd.close()
+        # large file compare
+        big_a = wr("big/a.txt", "".join(f"row {i}\n" for i in range(60000)))
+        big_b = wr("big/b.txt", "".join(("changed\n" if i == 30000 else f"row {i}\n") for i in range(60000)))
+        lw = cd.LargeCompareWindow(win, big_a, big_b)
+        end = _t.time() + 20
+        while not lw.save_btn.isEnabled() and _t.time() < end:
+            pump(30)
+        assert lw.save_btn.isEnabled(), lw.info.text()
+        assert "1 difference" in lw.info.text() and "changed" in lw.text and "- row 30000" in lw.text, lw.text
+        lw.close()
+        for pg in (base, left, right):
+            pg.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -1549,7 +1637,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("Word-style mini toolbar", t_word_style_toolbar), ("Paragraph group (align, spacing, shading, lists, sort)", t_paragraph_group), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("Word-style mini toolbar", t_word_style_toolbar), ("Paragraph group (align, spacing, shading, lists, sort)", t_paragraph_group), ("Compare dialogs (merge setup, folders, large files, sessions)", t_compare_dialogs), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:
@@ -1591,6 +1679,9 @@ def main(argv):
         return 0
     if "--selftest" in args:
         return selftest()
+    from lavatinoter import cli
+    if cli.wants_cli(args):
+        return cli.run(args)
     if "--data-dir-to" in args:                  # used by make_portable.bat to check where a portable build keeps its data
         from lavatinoter import util
         with open(args[args.index("--data-dir-to") + 1], "w", encoding="utf-8") as f:

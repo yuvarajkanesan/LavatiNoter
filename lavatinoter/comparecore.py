@@ -167,6 +167,57 @@ class Result:
         return added, removed, changed
 
 
+def _opcodes(sa, sb):
+    """difflib opcodes, computed fast: the common start and end are skipped and the rest is cut at lines that occur exactly once on
+    each side (kept in order, the longest such chain), so difflib only ever works on the short stretches in between."""
+    n, m = len(sa), len(sb)
+    lo = 0
+    while lo < n and lo < m and sa[lo] == sb[lo]:
+        lo += 1
+    hi_a, hi_b = n, m
+    while hi_a > lo and hi_b > lo and sa[hi_a - 1] == sb[hi_b - 1]:
+        hi_a -= 1
+        hi_b -= 1
+    ca, cb = {}, {}
+    for k in range(lo, hi_a):
+        ca[sa[k]] = ca.get(sa[k], 0) + 1
+    for k in range(lo, hi_b):
+        cb[sb[k]] = cb.get(sb[k], 0) + 1
+    where = {sb[k]: k for k in range(lo, hi_b) if cb[sb[k]] == 1}
+    pairs = [(k, where[sa[k]]) for k in range(lo, hi_a) if ca[sa[k]] == 1 and sa[k] in where]
+    # longest increasing chain of the right-hand positions
+    import bisect
+    tails, idx, prev = [], [], {}
+    for p, (_x, y) in enumerate(pairs):
+        t = bisect.bisect_left(tails, y)
+        if t == len(tails):
+            tails.append(y)
+            idx.append(p)
+        else:
+            tails[t] = y
+            idx[t] = p
+        prev[p] = idx[t - 1] if t else None
+    chain, p = [], idx[-1] if idx else None
+    while p is not None:
+        chain.append(pairs[p])
+        p = prev[p]
+    chain.reverse()
+    ops = []
+    if lo:
+        ops.append(("equal", 0, lo, 0, lo))
+    px, py = lo, lo
+    for x, y in chain + [(hi_a, hi_b)]:
+        if x > px or y > py:
+            for tag, x1, x2, y1, y2 in difflib.SequenceMatcher(None, sa[px:x], sb[py:y], autojunk=False).get_opcodes():
+                ops.append((tag, x1 + px, x2 + px, y1 + py, y2 + py))
+        if x < hi_a:
+            ops.append(("equal", x, x + 1, y, y + 1))
+        px, py = x + 1, y + 1
+    if hi_a < n:
+        ops.append(("equal", hi_a, n, hi_b, m))
+    return ops
+
+
 def _diff_keys(ka, kb, keep_a, keep_b, a_len, b_len):
     """Opcodes over the lines that take part (keep_*), mapped back to full line numbers."""
     sa, sb = [ka[i] for i in keep_a], [kb[j] for j in keep_b]
@@ -175,7 +226,7 @@ def _diff_keys(ka, kb, keep_a, keep_b, a_len, b_len):
     def pos(keep, x, n):
         return keep[x - 1] + 1 if x > 0 else 0
 
-    for tag, x1, x2, y1, y2 in difflib.SequenceMatcher(None, sa, sb, autojunk=False).get_opcodes():
+    for tag, x1, x2, y1, y2 in _opcodes(sa, sb):
         if tag == "equal":
             continue
         i1, i2 = (keep_a[x1], keep_a[x2 - 1] + 1) if x1 < x2 else (pos(keep_a, x1, a_len),) * 2

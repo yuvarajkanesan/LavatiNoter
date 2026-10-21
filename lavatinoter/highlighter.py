@@ -503,20 +503,19 @@ class Highlighter(QSyntaxHighlighter):
         hide = QColor(0, 0, 0, 0)
         special = self._para_marks(text, matches)
         for a, b in marks:                                  # ... then the marks themselves, last, so nothing inherits their look
-            for i in range(a, b):
-                fmt = self.format(i)
-                if SHOW_MARKS:
-                    fmt.setForeground(QColor(theme.c("FAINT")))
-                    fmt.setFontWeight(QFont.Normal)
-                    fmt.setFontItalic(False)
-                    fmt.setFontUnderline(False)
-                else:
-                    fmt.setForeground(hide)
-                    fmt.setFontPointSize(special.get((a, b), 0.1))
-                    fmt.setFontUnderline(False)
-                    fmt.setFontWeight(QFont.Normal)
-                    fmt.setFontItalic(False)
-                self.setFormat(i, 1, fmt)
+            fmt = QTextCharFormat()                         # one format for the whole mark: this runs for every line on load
+            if SHOW_MARKS:
+                fmt.setForeground(QColor(theme.c("FAINT")))
+                fmt.setFontWeight(QFont.Normal)
+                fmt.setFontItalic(False)
+                fmt.setFontUnderline(False)
+            else:
+                fmt.setForeground(hide)
+                fmt.setFontPointSize(special.get((a, b), 0.1))
+                fmt.setFontUnderline(False)
+                fmt.setFontWeight(QFont.Normal)
+                fmt.setFontItalic(False)
+            self.setFormat(a, b - a, fmt)
 
     def _para_marks(self, text, matches):
         """Sizes for the hidden paragraph marks: the opening one is made as wide as the space the alignment / indent needs, the

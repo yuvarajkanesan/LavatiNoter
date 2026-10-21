@@ -335,6 +335,10 @@ class MainWindow(QMainWindow):
         self.a_cmp_file = A("Compare with File on Disk...", self.compare_with_file)
         self.a_cmp_saved = A("Compare with Saved Version", self.compare_with_saved)
         self.a_cmp_git = A("Compare with Git HEAD (show changes)", self.compare_with_head)
+        self.a_cmp_merge = A("Three-way Merge...", self.three_way_merge)
+        self.a_cmp_folders = A("Compare Folders...", self.compare_folders)
+        self.a_cmp_large = A("Compare Large Files...", self.compare_large_files)
+        self.a_cmp_session = A("Open Comparison Session...", self.open_comparison_session)
         self.a_run = A("Run Current File", self.run_file, "F5", None, tip="Runs the file with the interpreter for its language; output goes to the Console")
         self.a_run_sel = A("Run Selection", lambda: self.run_file(selection=True), "Shift+F5")
         self.a_stop = A("Stop", self.stop_run, "Ctrl+F5")
@@ -536,8 +540,9 @@ class MainWindow(QMainWindow):
 
         m = mb.addMenu("Tools")
         cm = m.addMenu("Compare")
-        for a in (self.a_cmp_tab, self.a_cmp_file, self.a_cmp_saved, self.a_cmp_git):
-            cm.addAction(a)
+        for a in (self.a_cmp_tab, self.a_cmp_file, self.a_cmp_saved, self.a_cmp_git, None, self.a_cmp_merge, self.a_cmp_folders,
+                  self.a_cmp_large, self.a_cmp_session):
+            cm.addSeparator() if a is None else cm.addAction(a)
         m.addSeparator()
         m.addAction(self.a_paste_image)
         m.addAction(self.a_find_files)
@@ -1695,6 +1700,64 @@ class MainWindow(QMainWindow):
                 self._reload(page)
             self.flash(f"Saved {os.path.basename(path)}")
         return apply
+
+    def _tab_sources(self):
+        """[(label, Side factory)] for every open document that can be compared."""
+        out = []
+        for p in self.all_tabs():
+            if p.is_large:
+                continue
+            out.append((self.tab_title(p) + ("" if p.path else " (unsaved)"),
+                        lambda p=p: diffview.Side(self.tab_title(p), p.toPlainText(), self._tab_apply(p), f"Apply to {self.tab_title(p)}", p.path)))
+        return out
+
+    def three_way_merge(self):
+        from .comparedialogs import MergeSetupDialog
+        d = MergeSetupDialog(self, self._tab_sources(), self.default_directory())
+        if d.exec() != QDialog.Accepted or not d.result_sides:
+            return
+        s = d.result_sides
+        page = self.current()
+        self._show_diff(None, None, None, None, lang=page.lang if page is not None else None, left_side=s["left"], right_side=s["right"],
+                        base_side=s["base"], mode="3way")
+
+    def compare_folders(self):
+        from .comparedialogs import FolderCompareDialog
+        d = FolderCompareDialog(self, self, options=self._compare_options())
+        d.setAttribute(Qt.WA_DeleteOnClose, True)
+        d.show()
+
+    def compare_large_files(self):
+        from .comparedialogs import LargeCompareWindow
+        a, _ = QFileDialog.getOpenFileName(self, "Compare large files: first file", self.default_directory(), "All files (*.*)")
+        if not a:
+            return
+        b, _ = QFileDialog.getOpenFileName(self, "Compare large files: second file", os.path.dirname(a), "All files (*.*)")
+        if not b:
+            return
+        d = LargeCompareWindow(self, a, b, self._compare_options(), self.settings["font_size"])
+        d.setAttribute(Qt.WA_DeleteOnClose, True)
+        d.show()
+
+    def open_comparison_session(self, path=None):
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Open comparison session", self.default_directory(), "Comparison session (*.lncmp)")
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = diffview.cc.session_from_json(f.read())
+            left, right = diffview.side_from_session(data["left"]), diffview.side_from_session(data["right"])
+            base = diffview.side_from_session(data["base"]) if data.get("base") else None
+        except (OSError, ValueError, KeyError) as e:
+            self.flash(f"Cannot open that comparison session: {e}")
+            return
+        name = data.get("language")
+        lang = lang_by_name(name) if name else None
+        d = self._show_diff(None, None, None, None, lang=lang, left_side=left, right_side=right, base_side=base, mode=data.get("mode", "2way"),
+                            options=diffview.cc.Options.from_dict(data.get("options")), anchors=[tuple(a) for a in data.get("anchors", [])])
+        if d is not None:
+            d.lock_anchors = bool(data.get("lock_anchors", False))
 
     def compare_with_tab(self):
         page = self.current()
