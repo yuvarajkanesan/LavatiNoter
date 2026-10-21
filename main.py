@@ -1615,6 +1615,7 @@ def selftest():
             if isinstance(x, diffview.DiffWindow):
                 x.close()
         fd.close()
+        fd.deleteLater()
         # large file compare
         big_a = wr("big/a.txt", "".join(f"row {i}\n" for i in range(60000)))
         big_b = wr("big/b.txt", "".join(("changed\n" if i == 30000 else f"row {i}\n") for i in range(60000)))
@@ -1625,6 +1626,8 @@ def selftest():
         assert lw.save_btn.isEnabled(), lw.info.text()
         assert "1 difference" in lw.info.text() and "changed" in lw.text and "- row 30000" in lw.text, lw.text
         lw.close()
+        lw.deleteLater()
+        pump(100)
         for pg in (base, left, right):
             pg.document().setModified(False)
 
@@ -1644,7 +1647,9 @@ def selftest():
             p.close_file()
     say("SELFTEST OK" if ok else "SELFTEST FAILED")
     log.close()
-    return 0 if ok else 1
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0 if ok else 1)            # skips Qt's tear-down of every window and thread, which can crash on exit after the checks passed
 
 
 def _hand_over(name, paths):

@@ -176,6 +176,7 @@ class FolderCompareDialog(QDialog):
         self.worker = _FolderWorker(left, right, self._effective_options(), self.sub_cb.isChecked())
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
+        self.thread.finished.connect(self.worker.deleteLater)
         self.worker.done.connect(self._finished)
         self.thread.start()
 
@@ -287,6 +288,7 @@ class LargeCompareWindow(QDialog):
         self.worker = _StreamWorker(path_a, path_b, options or cc.Options())
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
+        self.thread.finished.connect(self.worker.deleteLater)
         self.worker.progress.connect(lambda f: self.bar.setValue(int(f * 1000)))
         self.worker.done.connect(self._finished)
         self.thread.start()
