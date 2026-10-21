@@ -566,16 +566,16 @@ class MainWindow(QMainWindow):
 
     def _para_button(self, icon, tip, fn=None, menu=None, checkable=False):
         b = QToolButton()
-        dd = menu is not None and fn is None                  # a menu-only button gets its arrow drawn inside the icon
-        b.setIcon(theme.icon(icon, theme.c("MUTED"), 24, dropdown=dd))
+        dd = False                                            # every menu button shows the same separate arrow beside its icon
+        b.setIcon(theme.icon(icon, theme.c("MUTED"), 24))
         b.setToolTip(tip)
         b.setCheckable(checkable)
         if menu is not None:
             b.setMenu(menu)
             b.setPopupMode(QToolButton.MenuButtonPopup if fn else QToolButton.InstantPopup)
-            b.setStyleSheet("QToolButton::menu-indicator { image: none; width: 0px; }" if dd else
-                            "QToolButton { padding-right: 17px; } QToolButton::menu-button { width: 15px; border: none; subcontrol-origin: padding; "
-                            "subcontrol-position: right center; }")
+            b.setStyleSheet("QToolButton { padding-right: 17px; } QToolButton::menu-button { width: 15px; border: none; subcontrol-origin: padding; "
+                            "subcontrol-position: right center; } QToolButton::menu-indicator { subcontrol-origin: padding; "
+                            "subcontrol-position: right center; right: 3px; }")
         if fn is not None:
             b.clicked.connect(lambda _=False, f=fn: f())
         self._para_buttons.append((b, icon, dd))
