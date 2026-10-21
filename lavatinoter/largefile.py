@@ -314,6 +314,7 @@ class LargeFileView(QWidget):
     cursorStatus = Signal()
     copyRequested = Signal(str, str)        # text, suggested title
     is_large = True
+    _closed = False
 
     def __init__(self, path, threshold_mb=64, parent=None):
         super().__init__(parent)
@@ -405,6 +406,7 @@ class LargeFileView(QWidget):
         self.goto.requested.connect(self._goto_requested)
 
         self.following = False
+        self._closed = False
         self._grow_timer = QTimer(self, interval=800)
         self._grow_timer.timeout.connect(self.refresh_growth)
         self._grow_timer.start()
@@ -431,6 +433,8 @@ class LargeFileView(QWidget):
         self.scroll_lines(-max(1, self.visible_rows() - 2))
 
     def refresh_growth(self):
+        if self._closed:
+            return
         """Notices that the file grew (or was truncated / rotated), re-maps it and indexes only the new part."""
         try:
             new_size = os.path.getsize(self.path)
@@ -529,7 +533,13 @@ class LargeFileView(QWidget):
         t.start()
 
     def close_file(self):
+        self._closed = True                            # queued signals from the indexer may still arrive: they must do nothing
         self._grow_timer.stop()
+        for sig, slot in ((self.indexer.progress, self._on_progress), (self.indexer.finished_ok, self._on_indexed)):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
         if self._filter is not None and self._filter.isRunning():
             self._filter.cancel()
             self._filter.wait(2000)
@@ -566,12 +576,16 @@ class LargeFileView(QWidget):
             f"Editing happens on a streamed copy.")
 
     def _on_progress(self, lines, done_bytes):
+        if self._closed:
+            return
         pct = done_bytes / max(1, self.size)
         self.index_bar.setValue(int(pct * 1000))
         self.index_label.setText(f"Indexing lines {pct * 100:.0f}%")
         self.cursorStatus.emit()
 
     def _on_indexed(self, lines):
+        if self._closed:
+            return
         self.indexing_done = True
         self.index_label.setText(f"{lines + 1:,} lines indexed")
         self.index_bar.setValue(1000)
@@ -626,6 +640,8 @@ class LargeFileView(QWidget):
         return max(5, self.editor.viewport().height() // max(1, self.editor.fontMetrics().lineSpacing()) + 1)
 
     def show_window(self, keep_row=None):
+        if self._closed:
+            return
         rows = self.visible_rows()
         pos = self.top
         spans = []
@@ -759,6 +775,8 @@ class LargeFileView(QWidget):
         self.goto.move(self.width() - self.goto.width() - 28, self.banner.height() + 18)
 
     def resizeEvent(self, e):
+        if self._closed:
+            return super().resizeEvent(e)
         super().resizeEvent(e)
         self._place_goto()
         QTimer.singleShot(0, self.show_window)

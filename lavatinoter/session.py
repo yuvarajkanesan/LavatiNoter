@@ -16,7 +16,8 @@ import zlib
 from . import APP_NAME, VERSION, util
 
 MAGIC = b"LNS1"
-MAX_BACKUP_BYTES = 400 * 1024 * 1024        # uncompressed text of unsaved documents beyond this is not backed up
+MAX_BACKUP_BYTES = 64 * 1024 * 1024         # uncompressed text of unsaved documents beyond this is not backed up
+MAX_BACKUP_DOC = 24 * 1024 * 1024            # one unsaved document bigger than this is not backed up (restoring it would freeze the start)
 
 
 def _path(name="session.lns"):

@@ -7,7 +7,8 @@ from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 from . import theme
 from .spell import WORD, speller
 
-MAX_HIGHLIGHT_CHARS = 3_000_000       # above this a document is shown without colours (keeps typing fast)
+MAX_HIGHLIGHT_CHARS = 400_000         # above this a document is shown without colours (keeps opening and typing fast)
+SPELL_MAX_CHARS = 150_000             # above this there is no spell check (it looks at every word)
 
 
 def words(s):
@@ -384,7 +385,7 @@ class Highlighter(QSyntaxHighlighter):
         self._syntax(text)
         if self.lang.name in RICH_LANGS and text:
             self._rich(text)
-        if self.spell_on and text and self.document().characterCount() < 1_000_000:
+        if self.spell_on and text and self.document().characterCount() < SPELL_MAX_CHARS:
             self._spell(text)
 
     def _rich(self, text):

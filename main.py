@@ -683,6 +683,10 @@ def selftest():
                 break
         assert win._git_root and win.lbl_git.isVisible() is not None
         win._update_git_marks()
+        for _ in range(100):
+            pump(30)
+            if page.git_marks:
+                break
         assert page.git_marks == {2: "modified", 4: "added"}, page.git_marks
         assert win.workspace.model.status, "workspace tree has no git status"
         win.compare_with_head()
@@ -1115,6 +1119,53 @@ def selftest():
             got[name] = os.path.basename(win._ask_save_path(os.path.join(d, "new 1"), "Text files (*.txt)"))
         assert got == {"mynotes": "mynotes.txt", "script": "script.py", "typed.js": "typed.js", "data": "data.txt", "page": "page.html"}, got
 
+    def t_startup_safety():
+        import json as _json
+        from lavatinoter import session as sess
+        # a file with one enormous line opens in large file mode instead of freezing the editor
+        p = os.path.join(work, "oneline.json")
+        with open(p, "w") as f:
+            f.write('{"items":[' + ",".join('{"id":%d,"name":"item %d"}' % (i, i) for i in range(40000)) + "]}")
+        assert os.path.getsize(p) > 1_000_000
+        assert win._has_very_long_line(p)
+        page = win.open_path(p)
+        assert page is not None and page.is_large, "a single 1.5 MB line must not go to the normal editor"
+        win.close_tab(page, force=True)
+        normal = os.path.join(work, "normal_lines.txt")
+        with open(normal, "w") as f:
+            f.write("line\n" * 400000)
+        assert not win._has_very_long_line(normal)
+        # an old settings file that still has the previous large-file limit moves to the new one
+        old = os.path.join(work, "old_settings.json")
+        with open(old, "w") as f:
+            _json.dump({"large_file_mb": 64}, f)
+        assert util.Settings(old)["large_file_mb"] == util.DEFAULTS["large_file_mb"] < 64
+        # tabs come back one at a time with the window responsive, and the start-up log says how long each took
+        for i in range(8):
+            t = win.new_file("def f():\n    return %d\n" % i * 200)
+        win.save_session()
+        for p3 in list(win.all_tabs()):
+            win.close_tab(p3, force=True)
+        marks = []
+        tick = QTimer()
+        tick.timeout.connect(lambda: marks.append(1))
+        tick.start(5)
+        done = []
+        win.restore_session_async(lambda: done.append(True))
+        for _ in range(400):
+            pump(20)
+            if done:
+                break
+        tick.stop()
+        assert done and win.tabs.count() >= 8, (done, win.tabs.count())
+        assert len(marks) > 8, "the event loop must keep running while tabs are restored"
+        assert not win._restoring
+        log = os.path.join(util.data_dir(), "logs", "startup.log")
+        assert os.path.exists(log) and "session restored" in open(log, encoding="utf-8").read()
+        for p2 in win.all_tabs():
+            if not p2.is_large:
+                p2.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -1124,7 +1175,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:
@@ -1174,7 +1225,7 @@ def main(argv):
     paths = [os.path.abspath(a) for a in args if not a.startswith("--")]
     new_instance = "--new-instance" in args
 
-    from PySide6.QtCore import QCoreApplication, Qt
+    from PySide6.QtCore import QCoreApplication, QTimer, Qt
     from PySide6.QtNetwork import QLocalServer
     from PySide6.QtWidgets import QApplication
 
@@ -1199,7 +1250,10 @@ def main(argv):
     theme.install_titlebar_filter(app)
     settings = util.Settings()
     from lavatinoter.mainwindow import MainWindow
+    util.startup_log_reset()
+    util.startup_log(f"starting {VERSION}")
     win = MainWindow(settings)
+    util.startup_log("main window built")
 
     server = QLocalServer()
     if not new_instance:
@@ -1225,11 +1279,49 @@ def main(argv):
         server.newConnection.connect(on_connection)
 
     win.showMaximized() if settings["maximized"] else win.show()          # opens maximized unless you last closed it un-maximized
-    if settings["restore_session"]:
-        win.restore_session()
-    win.open_paths(paths)
-    if win.tabs.count() == 0:
-        win.new_file()
+    util.startup_log("window shown")
+    # A start that never finished (a hang, a kill) leaves this file behind: offer to skip the saved tabs this time.
+    lock = os.path.join(util.data_dir(), "starting.lock")
+    skip = "--no-restore" in args
+    if not skip and os.path.exists(lock) and settings["restore_session"] and os.path.exists(os.path.join(util.data_dir(), "session.lns")):
+        from PySide6.QtWidgets import QMessageBox
+        box = QMessageBox(QMessageBox.Question, APP_NAME, "LavatiNoter did not finish starting last time.")
+        box.setInformativeText("This can happen when the saved tabs include a very large file. Open your previous tabs anyway?\n"
+                               "If you start empty, your tabs are kept in a backup file and nothing is lost.")
+        yes = box.addButton("Restore my tabs", QMessageBox.AcceptRole)
+        no = box.addButton("Start empty", QMessageBox.RejectRole)
+        box.setDefaultButton(no)
+        box.exec()
+        if box.clickedButton() is not yes:
+            skip = True
+            import shutil
+            import time as _t
+            try:
+                shutil.copy2(os.path.join(util.data_dir(), "session.lns"), os.path.join(util.data_dir(), f"session-skipped-{_t.strftime('%Y%m%d-%H%M%S')}.lns"))
+            except OSError:
+                pass
+    try:
+        with open(lock, "w") as f:
+            f.write("starting")
+    except OSError:
+        pass
+
+    def release_lock():
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
+        util.startup_log("start finished")
+
+    def finished():
+        win.open_paths(paths)
+        if win.tabs.count() == 0:
+            win.new_file()
+        QTimer.singleShot(1500, release_lock)
+    if settings["restore_session"] and not skip:
+        win.restore_session_async(finished)
+    else:
+        finished()
     return app.exec()
 
 

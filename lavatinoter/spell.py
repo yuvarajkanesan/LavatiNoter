@@ -13,6 +13,7 @@ class Speller:
         self._sc = None
         self._failed = False
         self.ignored = set()
+        self._memo = {}
         self.custom = set()
         self.path = os.path.join(util.data_dir(), "dictionary.txt")
         try:
@@ -39,7 +40,12 @@ class Speller:
         w = word.lower().strip("'")
         if sc is None or len(w) < 3 or w in self.ignored or w in self.custom:
             return False
-        return w not in sc
+        hit = self._memo.get(w)
+        if hit is None:                                   # the dictionary lookup is slow, and the same words come back constantly
+            if len(self._memo) > 60000:
+                self._memo.clear()
+            hit = self._memo[w] = (w not in sc)
+        return hit
 
     def suggestions(self, word, limit=6):
         sc = self._checker()
@@ -84,6 +90,7 @@ class Speller:
     def add_word(self, word):
         w = word.lower()
         self.custom.add(w)
+        self._memo.pop(w, None)
         try:
             with open(self.path, "a", encoding="utf-8") as f:
                 f.write(w + "\n")
@@ -92,6 +99,7 @@ class Speller:
 
     def ignore(self, word):
         self.ignored.add(word.lower())
+        self._memo.pop(word.lower(), None)
 
 
 speller = Speller()

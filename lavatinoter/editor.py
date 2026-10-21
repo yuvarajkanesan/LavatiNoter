@@ -153,11 +153,16 @@ class CodeEditor(QPlainTextEdit):
         self.gutter.update()
 
     def set_spellcheck(self, on, autocorrect):
-        self.highlighter.spell_on = on and spellmod.speller.available
-        self.autocorrect_on = autocorrect and self.highlighter.spell_on
-        self.highlighter.rehighlight()
+        new_on = bool(on and spellmod.speller.available)
+        changed = new_on != self.highlighter.spell_on
+        self.highlighter.spell_on = new_on
+        self.autocorrect_on = autocorrect and new_on
+        if changed:                                        # re-colouring a whole document is not free: only when it matters
+            self.highlighter.rehighlight()
 
     def set_language(self, lang):
+        if lang is self.lang and self.highlighter.lang is lang:
+            return
         self.lang = lang
         self._fold_timer.start()
         self.highlighter.set_lang(lang)

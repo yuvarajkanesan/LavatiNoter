@@ -92,7 +92,8 @@ class PreferencesDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    gitReady = Signal(object, object, str)             # from the Git worker thread to the window
+    gitReady = Signal(object, object, str, str)        # root, status, branch, HEAD id: from the Git worker thread to the window
+    gitMarks = Signal(str, int, object)                # path, document revision, (HEAD text, marks)
 
     def __init__(self, settings):
         super().__init__()
@@ -142,14 +143,21 @@ class MainWindow(QMainWindow):
         self.plugins = plugins.PluginManager(self)
         self._git_root = None
         self._git_busy = False
+        self._git_sha = None
+        self._git_marks_busy = False
+        self._git_marks_again = False
+        self._restoring = False
         self.gitReady.connect(self._git_done)
+        self.gitMarks.connect(self._git_marks_done)
         self._git_head = {}                  # path -> HEAD text (cleared when the status is refreshed)
-        self._git_timer = QTimer(self, interval=6000)
+        self._git_timer = QTimer(self, interval=20000)
         self._git_timer.timeout.connect(self.refresh_git)
         self._git_marks_timer = QTimer(self, singleShot=True, interval=700)
         self._git_marks_timer.timeout.connect(self._update_git_marks)
         self._plugin_actions = []
         self._nav = []                       # (tab key, line) places to go Back to
+        self._docs_timer = QTimer(self, singleShot=True, interval=150)        # many tabs opening at once refresh the list once
+        self._docs_timer.timeout.connect(self._refresh_documents_now)
         self._autosave = QTimer(self, singleShot=True, interval=2500)      # like Notepad++: unsaved work is backed up as you type
         self._autosave.timeout.connect(self._backup_session)
         self._content_timer = QTimer(self, singleShot=True, interval=350)
@@ -767,6 +775,10 @@ class MainWindow(QMainWindow):
 
     def refresh_documents(self):
         self._autosave.start()
+        if not self._restoring:
+            self._docs_timer.start()
+
+    def _refresh_documents_now(self):
         rows = []
         for p in self.all_tabs():
             size = util.human_size(p.size) if p.is_large else util.human_size(p.length())
@@ -807,7 +819,7 @@ class MainWindow(QMainWindow):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             size = os.path.getsize(path)
-            if size > self.settings["large_file_mb"] * MB:
+            if size > self.settings["large_file_mb"] * MB or (size > MB and self._has_very_long_line(path)):
                 page = self._open_large(path)
             else:
                 page = self._open_text(path)
@@ -829,6 +841,30 @@ class MainWindow(QMainWindow):
         self.plugins.emit("open", path)
         self.results.log(f"Opened {path}" + (" (large file mode)" if page.is_large else ""))
         return page
+
+    @staticmethod
+    def _has_very_long_line(path, limit=200_000):
+        """A file whose lines are hundreds of thousands of characters long (minified JSON, a one-line export) would freeze the
+        normal editor while it lays the text out. Such files open in large file mode, which shows them instantly."""
+        try:
+            with open(path, "rb") as f:
+                run = 0
+                for _ in range(8):                                  # the first 8 MB are enough to tell
+                    chunk = f.read(1 << 20)
+                    if not chunk:
+                        break
+                    parts = chunk.split(b"\n")
+                    if len(parts) == 1:
+                        run += len(chunk)
+                    else:
+                        if run + len(parts[0]) > limit or max(map(len, parts[1:-1]), default=0) > limit:
+                            return True
+                        run = len(parts[-1])
+                    if run > limit:
+                        return True
+        except OSError:
+            return False
+        return False
 
     def _blank_tab(self):
         if self.tabs.count() != 1:
@@ -1545,26 +1581,34 @@ class MainWindow(QMainWindow):
             return
         self._show_diff("Git HEAD", "Current (editor)", old, page.toPlainText())
 
-    def refresh_git(self):
-        """Branch name, workspace colours and change bars. Git runs in a short-lived thread so the window never waits for it."""
-        if not gitinfo.git_exe():
+    def refresh_git(self, force=False):
+        """Branch name and workspace colours. Git runs in a short-lived thread so the window never waits for it, and it is only
+        asked while the window is in use."""
+        if not gitinfo.git_exe() or self._restoring:
+            return
+        if not force and QApplication.applicationState() != Qt.ApplicationActive:
             return
         folder = self.workspace.root or (os.path.dirname(self.current().path) if self.current() is not None and self.current().path else "")
-        if not folder or getattr(self, "_git_busy", False):
+        if not folder or self._git_busy:
             return
         self._git_busy = True
         import threading
 
         def work():
             root = gitinfo.repo_root(folder)
-            result = (root, gitinfo.status(root), gitinfo.branch(root)) if root else (None, {}, "")
-            self.gitReady.emit(*result)
+            if root:
+                out = gitinfo.run(["rev-parse", "HEAD"], root)
+                self.gitReady.emit(root, gitinfo.status(root), gitinfo.branch(root), out.decode().strip() if out else "")
+            else:
+                self.gitReady.emit(None, {}, "", "")
         threading.Thread(target=work, daemon=True).start()
 
-    def _git_done(self, root, status, branch):
+    def _git_done(self, root, status, branch, sha):
         self._git_busy = False
         self._git_root = root
-        self._git_head = {}
+        if sha != self._git_sha:                                # the commit changed: the old HEAD texts are stale
+            self._git_head = {}
+            self._git_sha = sha
         self.workspace.model.set_status(status)
         if root:
             self.lbl_git.setText(f"\u2387 {branch}" + (f"  \u00b1{len(status)}" if status else ""))
@@ -1574,22 +1618,45 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_git.hide()
             self._git_timer.stop()
-        self._update_git_marks()
+        self._git_marks_timer.start()
 
     def _update_git_marks(self):
-        for p in self.all_tabs():
-            if p.is_large:
-                continue
-            marks = {}
-            if self._git_root and p.path and os.path.normcase(p.path).startswith(os.path.normcase(self._git_root)):
-                if p.path not in self._git_head:
-                    self._git_head[p.path] = gitinfo.head_text(self._git_root, p.path)
-                old = self._git_head[p.path]
-                if old is not None:
-                    marks = gitinfo.line_changes(old, p.toPlainText())
-            if marks != p.git_marks:
-                p.git_marks = marks
-                p.gutter.update()
+        """Change bars for the document you are looking at. The comparison runs in a thread, and only for files of a sane size."""
+        page = self.current()
+        if page is None or page.is_large or not self._git_root or not page.path or self._restoring:
+            return
+        if not os.path.normcase(page.path).startswith(os.path.normcase(self._git_root)):
+            return
+        if page.length() > 300_000 or page.blockCount() > 8000:
+            if page.git_marks:
+                page.git_marks = {}
+                page.gutter.update()
+            return
+        if self._git_marks_busy:
+            self._git_marks_again = True
+            return
+        self._git_marks_busy = True
+        path, rev, text, root = page.path, page.document().revision(), page.toPlainText(), self._git_root
+        cached = self._git_head.get(path, "\0missing")
+        import threading
+
+        def work():
+            old = gitinfo.head_text(root, path) if cached == "\0missing" else cached
+            marks = gitinfo.line_changes(old, text) if old is not None else {}
+            self.gitMarks.emit(path, rev, (old, marks))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _git_marks_done(self, path, rev, payload):
+        old, marks = payload
+        self._git_marks_busy = False
+        self._git_head[path] = old
+        page = self.find_open(path)
+        if page is not None and not page.is_large and page.document().revision() == rev and marks != page.git_marks:
+            page.git_marks = marks
+            page.gutter.update()
+        if self._git_marks_again:
+            self._git_marks_again = False
+            self._git_marks_timer.start()
 
     # ---- run ------------------------------------------------------------------------------------------------------------
     def run_file(self, selection=False):
@@ -2376,6 +2443,8 @@ class MainWindow(QMainWindow):
 
     def _tab_changed(self, i):
         page = self.current()
+        if self._restoring:
+            return
         self._update_all()
         if page is not None and not page.is_large:
             page.setFocus()
@@ -2477,7 +2546,7 @@ class MainWindow(QMainWindow):
                      "bookmarks": [b.blockNumber() + 1 for b in p._bookmarked_blocks()]}
             if self._modified(p) or (not p.path and p.length()):
                 text = p.toPlainText()
-                if len(text) <= budget:
+                if len(text) <= budget and len(text) <= session.MAX_BACKUP_DOC:
                     budget -= len(text)
                     entry["text"] = text
                     entry["modified"] = self._modified(p)
@@ -2486,53 +2555,97 @@ class MainWindow(QMainWindow):
                 "workspace": self.workspace.root}
         return session.save(data)
 
+    def _restore_entry(self, entry):
+        """Brings one saved tab back. -> the page, or None."""
+        p = entry.get("path")
+        page = None
+        try:
+            if "text" in entry:
+                ed = self._make_editor()
+                ed.title = entry.get("title") or f"new {self._untitled + 1}"
+                ed.path = p if p and os.path.isfile(p) else None
+                ed.encoding = entry.get("encoding", "UTF-8")
+                ed.eol = entry.get("eol", "\r\n")
+                ed.lang_auto = bool(entry.get("auto", not p))
+                if ed.path:                                       # language first, text second: the text is coloured once
+                    ed.detect_language()
+                else:
+                    ed.set_language(lang_by_name(entry.get("lang", "Plain text")))
+                ed.setPlainText(entry["text"])
+                # unsaved "new N" text shows as modified, like Notepad++
+                ed.document().setModified(bool(entry.get("modified", True)) or not ed.path)
+                if ed.path:
+                    ed.mtime = os.path.getmtime(ed.path)
+                page = self._add_page(ed, activate=False)
+            elif not p and entry.get("title"):                          # an empty "new N" tab
+                ed = self._make_editor()
+                ed.title = entry["title"]
+                ed.encoding = entry.get("encoding", "UTF-8")
+                ed.eol = entry.get("eol", "\r\n")
+                ed.set_language(lang_by_name(entry.get("lang", "Plain text")))
+                page = self._add_page(ed, activate=False)
+                ed.document().setModified(False)
+            elif p and os.path.isfile(p):
+                page = self.open_path(p)
+            if page is not None and not page.is_large:
+                page.goto_line(entry.get("line", 1), entry.get("col", 0))
+                page.verticalScrollBar().setValue(entry.get("scroll", 0))
+                for ln in entry.get("bookmarks", []):
+                    page.toggle_bookmark(page.document().findBlockByNumber(ln - 1))
+        except (OSError, ValueError, KeyError):
+            return None
+        return page
+
+    def _restore_finish(self, data, opened):
+        self._restoring = False
+        if opened:
+            self.tabs.setCurrentIndex(max(0, min(int(data.get("current", 0)), self.tabs.count() - 1)))
+        self._update_all()
+        self._refresh_documents_now()
+        self.refresh_git()
+        util.startup_log(f"session restored: {opened} tabs")
+
     def restore_session(self):
+        """Restores every saved tab in one go (used by tests; the app itself uses restore_session_async)."""
         data = session.load()
         if not data:
             return False
         self._untitled = int(data.get("untitled", 0))
-        opened = 0
-        for entry in data.get("items", []):
-            p = entry.get("path")
-            try:
-                page = None
-                if "text" in entry:
-                    ed = self._make_editor()
-                    ed.title = entry.get("title") or f"new {self._untitled + 1}"
-                    ed.path = p if p and os.path.isfile(p) else None
-                    ed.encoding = entry.get("encoding", "UTF-8")
-                    ed.eol = entry.get("eol", "\r\n")
-                    ed.lang_auto = bool(entry.get("auto", not p))
-                    ed.setPlainText(entry["text"])
-                    ed.detect_language() if ed.path else ed.set_language(lang_by_name(entry.get("lang", "Plain text")))
-                    # unsaved "new N" text shows as modified, like Notepad++
-                    ed.document().setModified(bool(entry.get("modified", True)) or not ed.path)
-                    if ed.path:
-                        ed.mtime = os.path.getmtime(ed.path)
-                    page = self._add_page(ed, activate=False)
-                elif not p and entry.get("title"):                          # an empty "new N" tab
-                    ed = self._make_editor()
-                    ed.title = entry["title"]
-                    ed.encoding = entry.get("encoding", "UTF-8")
-                    ed.eol = entry.get("eol", "\r\n")
-                    ed.set_language(lang_by_name(entry.get("lang", "Plain text")))
-                    page = self._add_page(ed, activate=False)
-                    ed.document().setModified(False)
-                elif p and os.path.isfile(p):
-                    page = self.open_path(p)
-                if page is not None:
-                    opened += 1
-                    if not page.is_large:
-                        page.goto_line(entry.get("line", 1), entry.get("col", 0))
-                        page.verticalScrollBar().setValue(entry.get("scroll", 0))
-                        for ln in entry.get("bookmarks", []):
-                            page.toggle_bookmark(page.document().findBlockByNumber(ln - 1))
-            except (OSError, ValueError, KeyError):
-                continue
-        if opened:
-            self.tabs.setCurrentIndex(max(0, min(int(data.get("current", 0)), self.tabs.count() - 1)))
-            self._update_all()
+        self._restoring = True
+        opened = sum(1 for entry in data.get("items", []) if self._restore_entry(entry) is not None)
+        self._restore_finish(data, opened)
         return opened > 0
+
+    def restore_session_async(self, done=None):
+        """Restores the saved tabs one at a time with the window already on screen, so it stays responsive however many (or how
+        big) the tabs are. `done()` is called when they are all back."""
+        data = session.load()
+        if not data or not data.get("items"):
+            if done:
+                done()
+            return False
+        self._untitled = int(data.get("untitled", 0))
+        self._restoring = True
+        queue = list(data["items"])
+        total = len(queue)
+        state = {"opened": 0}
+
+        def step():
+            if not queue:
+                self._restore_finish(data, state["opened"])
+                if done:
+                    done()
+                return
+            entry = queue.pop(0)
+            self.flash(f"Restoring your tabs...  {total - len(queue)} of {total}")
+            t0 = time.perf_counter()
+            page = self._restore_entry(entry)
+            state["opened"] += page is not None
+            util.startup_log(f"  tab {total - len(queue)}/{total} {entry.get('title') or os.path.basename(entry.get('path') or '?')}: "
+                             f"{(time.perf_counter() - t0) * 1000:.0f} ms")
+            QTimer.singleShot(0, step)
+        QTimer.singleShot(0, step)
+        return True
 
     def closeEvent(self, e: QCloseEvent):
         self.find_dialog.stop()

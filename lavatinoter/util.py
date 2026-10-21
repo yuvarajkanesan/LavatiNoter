@@ -10,6 +10,31 @@ from . import APP_NAME
 
 
 # ---- paths --------------------------------------------------------------------------------------
+import time as _time
+
+_T0 = _time.perf_counter()
+
+
+def startup_log(message):
+    """One line in logs\\startup.log with the seconds since the program started: when a start is slow, this shows where."""
+    try:
+        with open(os.path.join(sub_dir("logs"), "startup.log"), "a", encoding="utf-8") as f:
+            f.write(f"{_time.perf_counter() - _T0:7.2f}s  {message}\n")
+    except OSError:
+        pass
+
+
+def startup_log_reset(keep=250):
+    path = os.path.join(sub_dir("logs"), "startup.log")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()[-keep:]
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(lines + ["\n--- new start ---\n"])
+    except OSError:
+        pass
+
+
 def data_dir():
     """Per-user data folder (settings, session backups, pasted images of unsaved documents)."""
     base = os.environ.get("LAVATINOTER_HOME")
@@ -88,7 +113,8 @@ DEFAULTS = {
     "show_whitespace": False,
     "show_minimap": True,
     "show_workspace": True,
-    "large_file_mb": 64,
+    "large_file_mb": 20,
+    "settings_version": 2,
     "image_folder": "images",
     "recent_files": [],
     "workspace": "",
@@ -121,6 +147,9 @@ class Settings:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
                 self.values.update(loaded)
+                if loaded.get("settings_version", 1) < 2 and loaded.get("large_file_mb") == 64:
+                    self.values["large_file_mb"] = DEFAULTS["large_file_mb"]      # the old default made 40 MB files take 10+ seconds to open
+                self.values["settings_version"] = DEFAULTS["settings_version"]
         except (OSError, ValueError):
             pass
 
