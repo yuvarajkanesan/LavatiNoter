@@ -1535,14 +1535,31 @@ class MainWindow(QMainWindow):
     def _text_of(self, page):
         return page.toPlainText()
 
-    def _show_diff(self, lt, rt, old, new):
+    def _show_diff(self, lt, rt, old, new, left_apply=None, right_apply=None, lang=None, left_label="Apply", right_label="Apply"):
         try:
-            d = diffview.DiffWindow(self, lt, rt, old, new)
+            d = diffview.DiffWindow(self, lt, rt, old, new, left_apply, right_apply, lang, self.settings["font_size"], left_label, right_label)
         except ValueError as e:
             self.flash(str(e))
             return
         d.setAttribute(Qt.WA_DeleteOnClose, True)
         d.show()
+
+    def _tab_apply(self, page):
+        """A callable that puts text back into a tab (undoable there; save the tab to keep it)."""
+        def apply(text):
+            if page in self.all_tabs() and not page.is_large and not page.isReadOnly():
+                page.replace_document_text(text)
+                self.flash(f"Changes applied to {self.tab_title(page)} (not saved yet)")
+        return apply
+
+    def _file_apply(self, path, encoding, eol):
+        def apply(text):
+            util.write_text_file(path, text, encoding, eol)
+            page = self.find_open(path)
+            if page is not None and not page.is_large and not self._modified(page):
+                self._reload(page)
+            self.flash(f"Saved {os.path.basename(path)}")
+        return apply
 
     def compare_with_tab(self):
         page = self.current()
@@ -1550,9 +1567,14 @@ class MainWindow(QMainWindow):
         if page is None or page.is_large or not others:
             self.flash("Open a second document to compare with.")
             return
+
+        def go(other):
+            self._show_diff(self.tab_title(other), self.tab_title(page), other.toPlainText(), page.toPlainText(),
+                            self._tab_apply(other), self._tab_apply(page), page.lang,
+                            f"Apply to {self.tab_title(other)}", f"Apply to {self.tab_title(page)}")
         d = Picker(self, "Compare with", "Choose the document to compare with...",
                    lambda q: [(self.tab_title(p), p.path or "(unsaved)", p) for p in others])
-        d.chosen.connect(lambda other: self._show_diff(self.tab_title(other), self.tab_title(page), other.toPlainText(), page.toPlainText()))
+        d.chosen.connect(go)
         d.show()
 
     def compare_with_file(self):
@@ -1562,11 +1584,12 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Compare with", self.default_directory(), "All files (*.*)")
         if path:
             try:
-                text = util.read_text_file(path)[0]
+                text, enc, eol, _b = util.read_text_file(path)
             except OSError as e:
                 self.flash(str(e))
                 return
-            self._show_diff(os.path.basename(path), self.tab_title(page), text, page.toPlainText())
+            self._show_diff(os.path.basename(path), self.tab_title(page), text, page.toPlainText(), self._file_apply(path, enc, eol),
+                            self._tab_apply(page), page.lang, f"Save {os.path.basename(path)}", f"Apply to {self.tab_title(page)}")
 
     def compare_with_saved(self):
         page = self.current()
@@ -1574,11 +1597,12 @@ class MainWindow(QMainWindow):
             self.flash("Only a saved document can be compared with its saved version.")
             return
         try:
-            text = util.read_text_file(page.path)[0]
+            text, enc, eol, _b = util.read_text_file(page.path)
         except OSError as e:
             self.flash(str(e))
             return
-        self._show_diff("Saved on disk", "Current (editor)", text, page.toPlainText())
+        self._show_diff("Saved on disk", "Current (editor)", text, page.toPlainText(), self._file_apply(page.path, enc, eol),
+                        self._tab_apply(page), page.lang, "Save to disk", f"Apply to {self.tab_title(page)}")
 
     def compare_with_head(self):
         page = self.current()
@@ -1589,7 +1613,8 @@ class MainWindow(QMainWindow):
         if old is None:
             self.flash("This file is not tracked by Git yet.")
             return
-        self._show_diff("Git HEAD", "Current (editor)", old, page.toPlainText())
+        self._show_diff("Git HEAD", "Current (editor)", old, page.toPlainText(), None, self._tab_apply(page), page.lang, "",
+                        f"Apply to {self.tab_title(page)}")
 
     def refresh_git(self, force=False):
         """Branch name and workspace colours. Git runs in a short-lived thread so the window never waits for it, and it is only

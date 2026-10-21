@@ -68,6 +68,7 @@ class CodeEditor(QPlainTextEdit):
         self.marks = []                     # [(start, length)] highlighted by the Mark tab
         self._pix_cache = {}
         self.autocomplete_on = False
+        self.line_tint = {}                # {line: QColor}: lines painted in a colour (the comparison window)
         self._edit_link = None             # block number of a picture link being edited by hand (Enter on a selected picture)
         self.copy_styled = True            # plain-text copy of formatted text uses bold / italic look-alike characters
         self.lang_auto = False             # the language follows what the text looks like (new documents, unknown extensions)
@@ -315,6 +316,7 @@ class CodeEditor(QPlainTextEdit):
             sels.append(line)
         sels += self._image_hide_selections()
         sels += self._extra_cursor_selections()
+        sels += self._tint_selections()
         sels += self._diag_selections()
         sels += self._mark_selections()
         sels += self._smart_selections()
@@ -1850,6 +1852,20 @@ class CodeEditor(QPlainTextEdit):
         self.git_marks = other.git_marks
         self._update_gutter_width()
         self.refresh_selections()
+
+    def _tint_selections(self):
+        out = []
+        doc = self.document()
+        for line, color in list(self.line_tint.items())[:4000]:
+            b = doc.findBlockByNumber(line)
+            if not b.isValid():
+                continue
+            s = QTextEdit.ExtraSelection()
+            s.format.setBackground(color)
+            s.format.setProperty(QTextFormat.FullWidthSelection, True)
+            s.cursor = QTextCursor(b)
+            out.append(s)
+        return out
 
     def _diag_selections(self):
         out = []

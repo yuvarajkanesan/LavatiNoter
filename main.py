@@ -1255,6 +1255,57 @@ def selftest():
         assert ed._edit_link is None and ed.textCursor().blockNumber() != link.blockNumber()
         ed.document().setModified(False)
 
+    def t_diff_editing():
+        from lavatinoter import diffview
+        left = win.new_file("one\ntwo\nthree\nfour\n")
+        right = win.new_file("one\nTWO\nthree\nfour\nfive\n")
+        lp, rp = "tab-left", "tab-right"
+        win._show_diff("left", "right", left.toPlainText(), right.toPlainText(), win._tab_apply(left), win._tab_apply(right), None, "Apply L", "Apply R")
+        dw = [w for w in win.findChildren(diffview.DiffWindow)][-1]
+        assert [b[0] for b in dw.blocks] == ["chg", "add"], dw.blocks
+        assert not dw.edits[0].isReadOnly() and not dw.edits[1].isReadOnly()
+        # both sides can be edited, and the comparison follows
+        dw.edits[1].setPlainText("one\nTWO\nthree\nfour\n")
+        dw.refresh()
+        assert [b[0] for b in dw.blocks] == ["chg"]
+        # copy the difference across, in both directions
+        dw.cur = 0
+        dw.copy_block(True)
+        assert dw.edits[1].toPlainText() == "one\ntwo\nthree\nfour\n", repr(dw.edits[1].toPlainText())
+        assert not dw.blocks and "identical" in dw.summary.text()
+        dw.edits[0].setPlainText("one\nthree\nfour\n")                     # a line removed on the left
+        dw.refresh()
+        assert [b[0] for b in dw.blocks] == ["add"]
+        dw.cur = 0
+        dw.copy_block(False)                                             # copy the right side's version to the left
+        assert dw.edits[0].toPlainText() == "one\ntwo\nthree\nfour\n"
+        # the shown line numbers and colours exist, and scrolling maps matching lines
+        assert dw.edits[0].line_tint == {} and dw._map_line(0, 2) == 2
+        # applying puts the text back into the tab it came from
+        dw.edits[1].setPlainText("one\nREPLACED\nthree\nfour\n")
+        dw.refresh()
+        dw.apply(1)
+        assert right.toPlainText() == "one\nREPLACED\nthree\nfour\n"
+        assert not dw._unapplied()
+        dw.close()
+        # a read-only side (the committed version in Git) cannot be edited
+        win._show_diff("Git HEAD", "Current", "a\nb\n", "a\nc\n", None, win._tab_apply(right), None, "", "Apply")
+        dw2 = [w for w in win.findChildren(diffview.DiffWindow)][-1]
+        assert dw2.edits[0].isReadOnly() and not dw2.edits[1].isReadOnly()
+        dw2.close()
+        # a file on disk
+        p = os.path.join(work, "cmp_target.txt")
+        open(p, "w").write("x\ny\n")
+        win._show_diff("disk", "tab", "x\ny\n", "x\nz\n", win._file_apply(p, "UTF-8", "\n"), win._tab_apply(right), None, "Save", "Apply")
+        dw3 = [w for w in win.findChildren(diffview.DiffWindow)][-1]
+        dw3.edits[0].setPlainText("x\nsaved\n")
+        dw3.apply(0)
+        assert open(p).read() == "x\nsaved\n"
+        dw3.apply(1)
+        dw3.close()
+        for e2 in (left, right):
+            e2.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -1264,7 +1315,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:
