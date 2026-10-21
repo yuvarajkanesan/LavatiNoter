@@ -93,6 +93,7 @@ DEFAULTS = {
     "recent_files": [],
     "workspace": "",
     "geometry": "",
+    "maximized": True,
     "restore_session": True,
     "spellcheck": True,
     "autocorrect": True,

@@ -77,3 +77,14 @@ class FormatterTests(unittest.TestCase):
         from lavatinoter import formatter as f
         self.assertEqual(f.format_css("a{color:red}"), "a {\n    color: red;\n}\n")
         self.assertIn("\nFROM t", f.format_sql("select a from t"))
+
+
+class FileTypeTests(unittest.TestCase):
+    def test_extension_rules(self):
+        from lavatinoter import filetypes as ft
+        self.assertEqual(ft.with_extension("notes", "Text files (*.txt)"), "notes.txt")
+        self.assertEqual(ft.with_extension("app", "Python (*.py *.pyw)"), "app.py")
+        self.assertEqual(ft.with_extension("app.js", "Text files (*.txt)"), "app.js")
+        self.assertEqual(ft.filter_list()[0], "Text files (*.txt)")
+
+

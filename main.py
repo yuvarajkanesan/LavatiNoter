@@ -1052,6 +1052,69 @@ def selftest():
             f.write(py)
         assert win.open_path(p2).lang.name == "Plain text"
 
+    def t_save_types():
+        from lavatinoter import filetypes as ft
+        assert ft.filter_list()[0] == "Text files (*.txt)" and ft.filter_list()[-1] == "All files (*.*)"
+        assert ft.with_extension(r"C:\x\notes", "Text files (*.txt)") == r"C:\x\notes.txt"            # no extension typed: .txt is added
+        assert ft.with_extension(r"C:\x\app", "Python (*.py *.pyw)") == r"C:\x\app.py"                # ... or the chosen type's
+        assert ft.with_extension(r"C:\x\app.js", "Text files (*.txt)") == r"C:\x\app.js"              # a typed extension is respected
+        assert ft.with_extension(r"C:\x\app", "All files (*.*)") == r"C:\x\app.txt"
+        assert ft.filter_for_path(r"C:\x\a.py") == "Python (*.py *.pyw)" and ft.filter_for_path("a.unknown") == "All files (*.*)"
+        assert ft.filter_for_lang("Plain text") == "Text files (*.txt)" and ft.filter_for_lang("Python").startswith("Python")
+        # Save As on a new document: the dialog starts on text files, and the result is saved under the chosen name
+        seen = {}
+        ed = win.new_file("hello save")
+        win.set_language("Plain text")
+
+        def fake_dialog(start, current):
+            seen["start"], seen["filter"] = start, current
+            return ft.with_extension(os.path.join(work, "saved_note"), current)
+        win._ask_save_path = fake_dialog
+        assert win.save_as(ed)
+        assert seen["filter"] == "Text files (*.txt)" and os.path.basename(seen["start"]).startswith("new ")
+        assert ed.path.endswith("saved_note.txt") and open(ed.path).read().strip() == "hello save"
+        assert win.tab_title(ed) == "saved_note.txt"
+        # a Python file offers Python again and Save keeps the format
+        p = os.path.join(work, "keep.py")
+        open(p, "w").write("print(1)\n")
+        page = win.open_path(p)
+        win._ask_save_path = lambda start, current: (seen.update(start=start, filter=current), start)[1]
+        win.save_as(page)
+        assert seen["filter"].startswith("Python") and seen["start"] == p
+        page.insertPlainText("x = 2\n")
+        assert win.save(page) and page.path == p and open(p).read().startswith("x = 2")
+        # choosing another type in the dialog saves in that format and the editor follows
+        win._ask_save_path = lambda start, current: ft.with_extension(os.path.join(work, "keep"), "Markdown (*.md *.markdown)")
+        assert win.save_as(page)
+        assert page.path.endswith("keep.md") and page.lang.name == "Markdown" and os.path.exists(os.path.join(work, "keep.md"))
+        del win._ask_save_path
+        # opens maximized
+        win.showMaximized()
+        pump(30)
+        assert win.isMaximized()
+        win.showNormal()
+
+    def t_save_dialog():
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QFileDialog, QLineEdit
+        d = os.path.join(work, "savedlg")
+        os.makedirs(d, exist_ok=True)
+
+        def drive(name, flt):
+            def go():
+                dlg = [x for x in app.topLevelWidgets() if isinstance(x, QFileDialog) and x.isVisible()][0]
+                dlg.setDirectory(d)
+                dlg.selectNameFilter(flt)
+                dlg.findChild(QLineEdit).setText(name)
+                dlg.accept()
+            QTimer.singleShot(300, go)
+        got = {}
+        for name, flt in (("mynotes", "Text files (*.txt)"), ("script", "Python (*.py *.pyw)"), ("typed.js", "Text files (*.txt)"),
+                          ("data", "All files (*.*)"), ("page", "HTML (*.html *.htm)")):
+            drive(name, flt)
+            got[name] = os.path.basename(win._ask_save_path(os.path.join(d, "new 1"), "Text files (*.txt)"))
+        assert got == {"mynotes": "mynotes.txt", "script": "script.py", "typed.js": "typed.js", "data": "data.txt", "page": "page.html"}, got
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -1061,7 +1124,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:
@@ -1161,7 +1224,7 @@ def main(argv):
                 read()
         server.newConnection.connect(on_connection)
 
-    win.show()
+    win.showMaximized() if settings["maximized"] else win.show()          # opens maximized unless you last closed it un-maximized
     if settings["restore_session"]:
         win.restore_session()
     win.open_paths(paths)

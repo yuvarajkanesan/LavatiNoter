@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QSplitter, QApplication, QCheckBox, QDialog, QDia
                                QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
                                QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget, QComboBox, QLineEdit)
 
-from . import detect, export, lsp, runner, updates
+from . import detect, export, filetypes, lsp, runner, updates
 from . import APP_NAME, VERSION, diffview, editorconfig, formatter, gitinfo, hexview, plugins, session, symbols, theme, util
 from .editor import CodeEditor
 from .finddialog import FindDialog
@@ -927,7 +927,8 @@ class MainWindow(QMainWindow):
 
     def raise_window(self):
         if self.isMinimized():
-            self.showNormal()
+            self.setWindowState(self.windowState() & ~Qt.WindowMinimized)       # back to how it was (maximized stays maximized)
+            self.show()
         self.raise_()
         self.activateWindow()
 
@@ -987,17 +988,47 @@ class MainWindow(QMainWindow):
         if page is None or page.is_large:
             self.flash("Large files are read-only. Use Make editable copy... first.")
             return False
-        start = page.path or os.path.join(self.default_directory(), page.title + (".txt" if "." not in page.title else ""))
-        path, _ = QFileDialog.getSaveFileName(self, "Save As", start, "All files (*.*)")
+        if page.path:                                     # a file keeps its own type unless you pick another one
+            start, current = page.path, filetypes.filter_for_path(page.path)
+        else:                                             # a new document starts as a text file
+            start = os.path.join(self.default_directory(), page.title)
+            current = filetypes.filter_for_lang(page.lang.name)
+        path = self._ask_save_path(start, current)
         if not path:
             return False
         ok = self._write(page, path)
         if ok:
             page.path = path
+            page.lang_auto = False
             page.detect_language()
+            page.config = editorconfig.properties_for(path)
+            page.title = os.path.basename(path)
             self._decorate_tab(page)
             self._update_all()
         return ok
+
+    def _ask_save_path(self, start, current_filter):
+        """The Save As dialog with a 'Save as type' list. A name typed without an extension gets the extension of the chosen
+        type (text files: .txt); a name typed with one is saved exactly as typed. -> the chosen path or ''."""
+        dlg = QFileDialog(self, "Save As", os.path.dirname(start) or self.default_directory())
+        dlg.setAcceptMode(QFileDialog.AcceptSave)
+        dlg.setFileMode(QFileDialog.AnyFile)
+        dlg.setNameFilters(filetypes.filter_list())
+        dlg.selectNameFilter(current_filter if current_filter in filetypes.filter_list() else filetypes.filter_list()[0])
+        dlg.setLabelText(QFileDialog.FileType, "Save as type:")
+        name = os.path.basename(start)
+        base, ext = os.path.splitext(name)
+        dlg.selectFile(name if ext else base)
+        if dlg.exec() != QDialog.Accepted or not dlg.selectedFiles():
+            return ""
+        path = filetypes.with_extension(os.path.normpath(dlg.selectedFiles()[0]), dlg.selectedNameFilter())
+        # the dialog only asked about overwriting the name as typed: ask again if adding the extension hit another file
+        if os.path.exists(path) and os.path.normcase(path) != os.path.normcase(os.path.normpath(dlg.selectedFiles()[0])):
+            r = QMessageBox.question(self, "Save As", f"{os.path.basename(path)} already exists.\nDo you want to replace it?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if r != QMessageBox.Yes:
+                return ""
+        return path
 
     def _write(self, page, path):
         text = page.toPlainText()
@@ -2516,6 +2547,7 @@ class MainWindow(QMainWindow):
                     e.ignore()
                     return
         self.settings["geometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
+        self.settings["maximized"] = self.isMaximized() or self.isFullScreen()
         self.settings.save()
         for p in self.all_tabs():
             if p.is_large:
