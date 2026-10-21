@@ -1,8 +1,9 @@
 """Turns the formatting marks (**bold**, _italic_, <u>underline</u>, <span style="font-size:..px">size</span>) into clean text or
 real HTML, so a copy pastes properly into Word, mail and web pages instead of showing the raw ** and _ characters."""
 import html
+import re
 
-from .highlighter import mark_spans, rich_matches
+from .highlighter import mark_spans, para_style, rich_matches
 
 
 def strip_marks(text):
@@ -25,11 +26,11 @@ def has_marks(text):
 
 
 def _line_runs(line):
-    """[(text, bold, italic, underline, px)] for one line, with the marks left out."""
+    """[(text, bold, italic, underline, size px, family, colour, background)] for one line, with the marks left out."""
     n = len(line)
     bold, ital, under, size = [False] * n, [False] * n, [False] * n, [0] * n
+    fam, col, bg = [""] * n, [""] * n, [""] * n
     for kind, m, a, b in rich_matches(line):
-        px = int(m.group(2)) if kind == "size" else 0
         for i in range(a, b):
             if kind == "bold":
                 bold[i] = True
@@ -37,8 +38,14 @@ def _line_runs(line):
                 ital[i] = True
             elif kind == "underline":
                 under[i] = True
-            else:
-                size[i] = px
+            elif kind == "size":
+                size[i] = int(re.sub(r"\D", "", m.group(2)) or 0)
+            elif kind == "family":
+                fam[i] = m.group(2).strip()
+            elif kind == "color":
+                col[i] = m.group(2).strip()
+            elif kind == "bg":
+                bg[i] = m.group(2).strip()
     hidden = set()
     for a, b in mark_spans(line):
         hidden.update(range(a, b))
@@ -46,7 +53,7 @@ def _line_runs(line):
     for i, ch in enumerate(line):
         if i in hidden:
             continue
-        key = (bold[i], ital[i], under[i], size[i])
+        key = (bold[i], ital[i], under[i], size[i], fam[i], col[i], bg[i])
         if runs and tuple(runs[-1][1:]) == key:
             runs[-1][0] += ch
         else:
@@ -79,7 +86,7 @@ def to_unicode(text):
     out = []
     for line in text.split("\n"):
         parts = []
-        for chunk, b, i, u, _px in _line_runs(line):
+        for chunk, b, i, u, *_rest in _line_runs(line):
             for ch in chunk:
                 s = _styled_char(ch, b, i)
                 parts.append(s + "\u0332" if u and not ch.isspace() else s)
@@ -87,16 +94,34 @@ def to_unicode(text):
     return "\n".join(out)
 
 
+def _css_for(style):
+    out = []
+    for k, v in style.items():
+        if k == "background":
+            out.append(f"background-color:{html.escape(v)}")
+        elif k == "border":
+            out.append(f"border:{html.escape(v)};padding:2px 4px")
+        elif k in ("text-align", "line-height", "margin-left"):
+            out.append(f"{k}:{html.escape(v)}")
+    return ";".join(out)
+
+
 def marks_to_html(text, fragment=False):
-    """HTML with real <b>, <i>, <u> and font sizes. `fragment=True` gives just the body content."""
-    lines = []
+    """HTML with real <b>, <i>, <u>, colours, font sizes and paragraph alignment / spacing / shading / borders."""
+    parts = []
     for line in text.split("\n"):
-        parts = []
-        for chunk, b, i, u, px in _line_runs(line):
+        pieces = []
+        for chunk, b, i, u, px, fam, col, bg in _line_runs(line):
             s = html.escape(chunk).replace("  ", "&nbsp; ")
             style = []
             if px:
                 style.append(f"font-size:{px}px")
+            if fam:
+                style.append(f"font-family:{html.escape(fam)}")
+            if col:
+                style.append(f"color:{html.escape(col)}")
+            if bg:
+                style.append(f"background-color:{html.escape(bg)}")
             if style:
                 s = f'<span style="{";".join(style)}">{s}</span>'
             if u:
@@ -105,7 +130,16 @@ def marks_to_html(text, fragment=False):
                 s = f"<i>{s}</i>"
             if b:
                 s = f"<b>{s}</b>"
-            parts.append(s)
-        lines.append("".join(parts))
-    body = "<br>\n".join(lines)
+            pieces.append(s)
+        body = "".join(pieces)
+        css = _css_for(para_style(line))
+        parts.append((f'<div style="{css}">{body or "&nbsp;"}</div>' if css else body, bool(css)))
+    out = []
+    for k, (s, is_div) in enumerate(parts):
+        out.append(s)
+        if k < len(parts) - 1 and not is_div and not parts[k + 1][1]:
+            out.append("<br>\n")
+        elif k < len(parts) - 1:
+            out.append("\n")
+    body = "".join(out)
     return body if fragment else f"<html><body>\n<!--StartFragment-->{body}<!--EndFragment-->\n</body></html>"

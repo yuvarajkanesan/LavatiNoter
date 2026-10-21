@@ -375,6 +375,135 @@ def _ic_textdown(p):
     _size_icon(p, False)
 
 
+def _ic_highlight(p):
+    """A marker pen."""
+    _poly(p, [(5, 15), (13, 4), (19, 10), (11, 20), (7, 20)], True)
+    p.drawLine(5, 15, 11, 20)
+    p.drawLine(10.5, 8, 16, 13.5)
+
+
+def _ic_fontcolor(p):
+    _glyph(p, "A", 17, bold=True, dx=0)
+
+
+def _ic_bullets(p):
+    for y in (6, 12, 18):
+        p.drawPoint(5, y)
+        p.drawLine(9, y, 20, y)
+    p.setPen(QPen(p.pen().color(), 3.2))
+    for y in (6, 12, 18):
+        p.drawPoint(5, y)
+
+
+def _ic_numbering(p):
+    for y in (6, 12, 18):
+        p.drawLine(10, y, 20, y)
+    f = QFont(ui_family())
+    f.setPixelSize(7)
+    f.setBold(True)
+    p.setFont(f)
+    for n, y in ((1, 6), (2, 12), (3, 18)):
+        p.drawText(QRectF(2, y - 4, 7, 8), Qt.AlignCenter, str(n))
+
+
+def _ic_clearfmt(p):
+    _glyph(p, "A", 16, dx=-2)
+    _poly(p, [(14, 17), (17, 11), (22, 14), (19, 20), (15, 20)], True)
+
+
+def _ic_comment(p):
+    p.drawRoundedRect(QRectF(3.5, 4, 17, 12.5), 2.5, 2.5)
+    _poly(p, [(8, 16.5), (8, 21), (13, 16.5)])
+    p.drawLine(12, 7.5, 12, 13)
+    p.drawLine(9.3, 10.2, 14.7, 10.2)
+
+
+def _ic_styles(p):
+    _glyph(p, "A", 20, dx=-1)
+    _poly(p, [(16.5, 8), (19, 11), (21.5, 8)])
+
+
+def _ic_multilevel(p):
+    for x, y, w in ((8, 6, 12), (12, 12, 8), (16, 18, 4)):
+        p.drawLine(x, y, x + w, y)
+    for x, y in ((4, 6), (8, 12), (12, 18)):
+        p.drawPoint(x, y)
+
+
+def _ic_indentinc(p):
+    for y in (5, 19):
+        p.drawLine(4, y, 20, y)
+    for y in (10, 14):
+        p.drawLine(11, y, 20, y)
+    _poly(p, [(4, 9), (8, 12), (4, 15)])
+
+
+def _ic_indentdec(p):
+    for y in (5, 19):
+        p.drawLine(4, y, 20, y)
+    for y in (10, 14):
+        p.drawLine(11, y, 20, y)
+    _poly(p, [(8, 9), (4, 12), (8, 15)])
+
+
+def _ic_sort(p):
+    _glyph(p, "A", 9, bold=True, dx=-6.5)
+    p.save()
+    f = QFont(ui_family())
+    f.setPixelSize(9)
+    f.setBold(True)
+    p.setFont(f)
+    p.drawText(QRectF(-1.5, 11.5, 10, 10), Qt.AlignCenter, "Z")
+    p.restore()
+    p.drawLine(16.5, 5, 16.5, 19)
+    _poly(p, [(13.5, 16), (16.5, 19.5), (19.5, 16)])
+
+
+def _ic_align(p, mode):
+    widths = (16, 11, 16, 8) if mode != "justify" else (16, 16, 16, 16)
+    for k, y in enumerate((6, 10.5, 15, 19.5)):
+        w = widths[k]
+        x = 4 if mode in ("left", "justify") else 20 - w if mode == "right" else 12 - w / 2
+        p.drawLine(x, y, x + w, y)
+
+
+def _ic_alignleft(p):
+    _ic_align(p, "left")
+
+
+def _ic_aligncenter(p):
+    _ic_align(p, "center")
+
+
+def _ic_alignright(p):
+    _ic_align(p, "right")
+
+
+def _ic_alignjustify(p):
+    _ic_align(p, "justify")
+
+
+def _ic_linespacing(p):
+    for y in (6, 12, 18):
+        p.drawLine(11, y, 20, y)
+    p.drawLine(5, 5, 5, 19)
+    _poly(p, [(2.5, 8), (5, 5), (7.5, 8)])
+    _poly(p, [(2.5, 16), (5, 19), (7.5, 16)])
+
+
+def _ic_shading(p):
+    _poly(p, [(5, 13), (12, 4), (19, 11), (12, 20), (8, 20)], True)
+    p.drawLine(5, 13, 10, 18)
+    p.setBrush(p.pen().color())
+    p.drawRect(QRectF(4, 21, 16, 2.4))
+
+
+def _ic_borders(p):
+    p.drawRect(QRectF(4.5, 4.5, 15, 15))
+    p.drawLine(12, 4.5, 12, 19.5)
+    p.drawLine(4.5, 12, 19.5, 12)
+
+
 def _ic_minimap(p):
     """A document outline with a bar down the side: the Map / functions / images panel."""
     p.drawRoundedRect(QRectF(3.5, 4, 17, 16), 2.5, 2.5)

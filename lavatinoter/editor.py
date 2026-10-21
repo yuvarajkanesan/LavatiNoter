@@ -8,13 +8,13 @@ import time
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import (QIcon, QGuiApplication, QAction, QColor, QPen, QFont, QFontMetricsF, QImage, QPainter, QPixmap, QTextCharFormat, QTextCursor, QTextFormat,
                            QTextOption, QTextBlockUserData)
-from PySide6.QtWidgets import QMenu, QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
+from PySide6.QtWidgets import QWidgetAction, QMenu, QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
 from . import folding, richtext
 from . import spell as spellmod
 from . import theme, util
 from .finddialog_pos import PosMap
-from .highlighter import PLAIN, RICH_LANGS, Highlighter, lang_for_path, mark_spans, rich_matches
+from .highlighter import PLAIN, RICH_LANGS, Highlighter, lang_for_path, mark_spans, para_style, rich_matches
 
 BRACKETS = {"(": ")", "[": "]", "{": "}"}
 CLOSERS = {v: k for k, v in BRACKETS.items()}
@@ -70,6 +70,12 @@ class CodeEditor(QPlainTextEdit):
         self.marks = []                     # [(start, length)] highlighted by the Mark tab
         self._pix_cache = {}
         self.autocomplete_on = False
+        self._has_para = False
+        self._in_para = False
+        self._shaded = set()
+        self._para_timer = QTimer(self, singleShot=True, interval=140)
+        self._para_timer.timeout.connect(self._refresh_paragraphs)
+        self.mini_toolbar = True            # the Word-style formatting box above the right-click menu
         self.styles_all = {}               # {slot: token}: every occurrence of the token is coloured
         self.styles_one = {}               # {slot: [QTextCursor]}: single places coloured by hand
         self._style_cache = (None, "")
@@ -80,6 +86,7 @@ class CodeEditor(QPlainTextEdit):
         self.context_provider = None       # callable(menu, editor) -> True when it added items (the Compare window uses it)
         self.search_url = "https://www.google.com/search?q={q}"
         self.line_tint = {}                # {line: QColor}: lines painted in a colour (the comparison window)
+        self.span_tint = {}                # {line: [(start, end, QColor)]}: parts of lines (the changed words)
         self._edit_link = None             # block number of a picture link being edited by hand (Enter on a selected picture)
         self.copy_styled = True            # plain-text copy of formatted text uses bold / italic look-alike characters
         self.lang_auto = False             # the language follows what the text looks like (new documents, unknown extensions)
@@ -118,6 +125,7 @@ class CodeEditor(QPlainTextEdit):
         self._ac = None                     # the last automatic correction, so Backspace can take it back
         self.gutter = LineNumberArea(self)
         self.highlighter = Highlighter(self.document())
+        self.highlighter.view = self
         self._smart = []
         self.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.setFrameShape(QPlainTextEdit.NoFrame)
@@ -209,6 +217,8 @@ class CodeEditor(QPlainTextEdit):
         cr = self.contentsRect()
         self.gutter.setGeometry(QRect(cr.left(), cr.top(), self.gutter_width(), cr.height()))
         self._schedule_refresh()
+        if self._has_para:
+            self._para_timer.start()                    # centred and right-aligned lines depend on the width of the window
         panel = getattr(self, "goto_panel", None)
         if panel is not None and panel.isVisible():
             panel.move(self.width() - panel.width() - 28, 16)
@@ -308,6 +318,8 @@ class CodeEditor(QPlainTextEdit):
         self.gutter.update()
 
     def _on_edit(self, pos, removed, added):
+        if not self._in_para:
+            self._para_timer.start()
         self._fold_timer.start()
         if self.marks:
             self.marks = []
@@ -730,6 +742,12 @@ class CodeEditor(QPlainTextEdit):
         ro = self.isReadOnly()
         has_sel = cur.hasSelection()
         word = self._word_or_selection()
+        if self.format_supported() and not ro and self.mini_toolbar:
+            from .minitoolbar import MiniToolbar                      # the formatting box on top, like Word
+            wa = QWidgetAction(menu)
+            wa.setDefaultWidget(MiniToolbar(self, menu))
+            menu.addAction(wa)
+            menu.addSeparator()
 
         def add(text, fn, enabled=True, shortcut=None):
             a = menu.addAction(text, fn)
@@ -986,14 +1004,19 @@ class CodeEditor(QPlainTextEdit):
         return {"bold": ("<b>", "</b>") if html else ("**", "**"), "italic": ("<i>", "</i>") if html else ("_", "_"),
                 "underline": ("<u>", "</u>")}[kind]
 
-    _LEFT_TOKEN = re.compile(r'(\*\*|_|\*|<u>|<b>|<i>|<span style="font-size:\d+px">)$')
+    _LEFT_TOKEN = re.compile(r'(\*\*|_|\*|<u>|<b>|<i>|<span style="(?:font-size|font-family|color|background):[^"]*">)$')
     _RIGHT_TOKEN = re.compile(r'^(\*\*|_|\*|</u>|</b>|</i>|</span>)')
     _KIND_OF = {"**": "bold", "<b>": "bold", "_": "italic", "*": "italic", "<i>": "italic", "<u>": "underline"}
     _CLOSER = {"**": "**", "<b>": "</b>", "_": "_", "*": "*", "<i>": "</i>", "<u>": "</u>"}
     _SPAN_OPEN = re.compile(r'^<span style="font-size:(\d+)px">$')
 
+    SPAN_PROP = {"size": "font-size", "family": "font-family", "color": "color", "bg": "background"}
+
     def _kind_of_token(self, tok):
-        return "size" if tok.startswith("<span") else self._KIND_OF.get(tok)
+        if tok.startswith("<span"):
+            m = re.match(r'<span style="([a-z-]+):', tok)
+            return next((k for k, v in self.SPAN_PROP.items() if m and v == m.group(1)), None)
+        return self._KIND_OF.get(tok)
 
     def _closer_of(self, tok):
         return "</span>" if tok.startswith("<span") else self._CLOSER.get(tok)
@@ -1248,6 +1271,378 @@ class CodeEditor(QPlainTextEdit):
             end_blk = doc.findBlockByNumber(segs[-1][0])
             sel.setPosition(end_blk.position() + len(end_blk.text()), QTextCursor.KeepAnchor)
         self.setTextCursor(sel)
+        return True
+
+    # ---- the Word-style mini toolbar: font, colours, lists, styles, comments ----------------------------------------------------
+    def _span_one(self, kind, s, e, value):
+        """Puts <span style="prop:value"> around s..e (or changes / removes the one that is already there). value None removes."""
+        doc = self.document()
+        s, e = self._normalize(s, e)
+        lay = self._find_layer(kind, s, e)
+        prop = self.SPAN_PROP[kind]
+        c = QTextCursor(doc)
+        if lay is not None:
+            lp, ll, rp, rl, _tok = lay
+            if value is None:
+                c.setPosition(rp)
+                c.setPosition(rp + rl, QTextCursor.KeepAnchor)
+                c.removeSelectedText()
+                c.setPosition(lp)
+                c.setPosition(lp + ll, QTextCursor.KeepAnchor)
+                c.removeSelectedText()
+                return s - ll, e - ll
+            tag = f'<span style="{prop}:{value}">'
+            c.setPosition(lp)
+            c.setPosition(lp + ll, QTextCursor.KeepAnchor)
+            c.insertText(tag)
+            return s + len(tag) - ll, e + len(tag) - ll
+        if value is None:
+            return s, e
+        tag = f'<span style="{prop}:{value}">'
+        c.setPosition(s)
+        c.setPosition(e, QTextCursor.KeepAnchor)
+        c.insertText(tag + c.selectedText() + "</span>")
+        return s + len(tag), e + len(tag)
+
+    def set_span(self, kind, value):
+        """Applies a font family / text colour / highlight to the selection (or the word at the caret). value None removes it."""
+        if not self.format_supported() or self.isReadOnly():
+            return False
+        cur = self.textCursor()
+        if not cur.hasSelection():
+            cur.select(QTextCursor.WordUnderCursor)
+            if not cur.hasSelection():
+                return False
+        segs = self._segments(cur.selectionStart(), cur.selectionEnd())
+        if not segs:
+            return False
+        doc = self.document()
+        cur.beginEditBlock()
+        result = None
+        for ln, a, b in reversed(segs):
+            blk = doc.findBlockByNumber(ln)
+            result = self._span_one(kind, blk.position() + a, blk.position() + b, value)
+        cur.endEditBlock()
+        sel = QTextCursor(doc)
+        if len(segs) == 1:
+            sel.setPosition(result[0])
+            sel.setPosition(result[1], QTextCursor.KeepAnchor)
+        else:
+            sel.setPosition(doc.findBlockByNumber(segs[0][0]).position())
+            end_blk = doc.findBlockByNumber(segs[-1][0])
+            sel.setPosition(end_blk.position() + len(end_blk.text()), QTextCursor.KeepAnchor)
+        self.setTextCursor(sel)
+        return True
+
+    def set_font_family(self, name):
+        return self.set_span("family", name or None)
+
+    def set_text_color(self, color):
+        return self.set_span("color", color or None)
+
+    def set_highlight(self, color):
+        return self.set_span("bg", color or None)
+
+    LIST_RX = re.compile(r"^(\s*)((?:\d+|[a-zA-Z]|[ivxlcdmIVXLCDM]+)[.)]|[-*+\u2022\u25e6\u25aa])\s+")
+    BULLETS = ("-", "*", "+", "\u2022", "\u25e6", "\u25aa")
+    NUMBERINGS = ("1.", "1)", "a.", "A.", "i.", "I.")
+
+    @staticmethod
+    def _roman(n):
+        out = ""
+        for v, s in ((1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"), (90, "xc"), (50, "l"), (40, "xl"), (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i")):
+            while n >= v:
+                out += s
+                n -= v
+        return out
+
+    def _marker(self, style, n):
+        """The text of list item number n in a style: '1.' '1)' 'a.' 'A.' 'i.' 'I.' or a bullet character."""
+        if style in self.BULLETS:
+            return style
+        body, end = style[:-1], style[-1]
+        if body == "1":
+            return f"{n}{end}"
+        if body in ("a", "A"):
+            letter = chr(ord(body) + (n - 1) % 26)
+            return letter * ((n - 1) // 26 + 1) + end
+        r = self._roman(n)
+        return (r.upper() if body == "I" else r) + end
+
+    def toggle_list(self, numbered=False, style=None):
+        """Makes the selected lines a bulleted (or numbered) list in the chosen style, switches an existing list to it, or takes
+        the list marks off when every line already has exactly that kind."""
+        if self.isReadOnly():
+            return False
+        style = style or ("1." if numbered else "-")
+        start, end = self._selected_blocks()
+        blocks = []
+        b = start
+        while b.isValid() and b.blockNumber() <= end.blockNumber():
+            if b.text().strip():
+                blocks.append(b)
+            b = b.next()
+        if not blocks:
+            return False
+
+        def kind(text):
+            m = self.LIST_RX.match(text)
+            if not m:
+                return None
+            return "bullet" if m.group(2) in self.BULLETS else "number"
+        want = "bullet" if style in self.BULLETS else "number"
+        remove = all(kind(blk.text()) == want and self.LIST_RX.match(blk.text()).group(2) == self._marker(style, i)
+                     for i, blk in enumerate(blocks, 1))
+        cur = self.textCursor()
+        cur.beginEditBlock()
+        n = 1
+        for blk in blocks:
+            text = blk.text()
+            m = self.LIST_RX.match(text)
+            c = QTextCursor(blk)
+            indent = len(text) - len(text.lstrip())
+            if remove:
+                c.setPosition(blk.position() + len(m.group(1)))
+                c.setPosition(blk.position() + m.end(), QTextCursor.KeepAnchor)
+                c.removeSelectedText()
+                continue
+            c.setPosition(blk.position() + (len(m.group(1)) if m else indent))
+            if m:
+                c.setPosition(blk.position() + m.end(), QTextCursor.KeepAnchor)
+            c.insertText(self._marker(style, n) + " ")
+            n += 1
+        cur.endEditBlock()
+        return True
+
+    def multilevel_list(self):
+        """Numbers the selected lines as an outline: the indent of a line decides its level (1. then a. then i. ...)."""
+        if self.isReadOnly():
+            return False
+        start, end = self._selected_blocks()
+        blocks = []
+        b = start
+        while b.isValid() and b.blockNumber() <= end.blockNumber():
+            if b.text().strip():
+                blocks.append(b)
+            b = b.next()
+        if not blocks:
+            return False
+        unit = max(1, self.tab_width) if self.use_spaces else 1
+        styles = ("1.", "a.", "i.", "1)", "a)", "i)")
+        counters = []
+        cur = self.textCursor()
+        cur.beginEditBlock()
+        for blk in blocks:
+            text = blk.text().expandtabs(self.tab_width)
+            m = self.LIST_RX.match(text)
+            lead = len(m.group(1)) if m else len(text) - len(text.lstrip())
+            level = min(len(styles) - 1, lead // unit)
+            del counters[level + 1:]
+            while len(counters) <= level:
+                counters.append(0)
+            counters[level] += 1
+            body = text[m.end():] if m else text.lstrip()
+            c = QTextCursor(blk)
+            c.select(QTextCursor.LineUnderCursor)
+            c.insertText(" " * (level * unit) + self._marker(styles[level], counters[level]) + " " + body)
+        cur.endEditBlock()
+        return True
+
+    def change_indent(self, delta):
+        """Moves the selected lines one step right (+1) or left (-1): by a tab width of spaces (or a tab)."""
+        if self.isReadOnly():
+            return False
+        start, end = self._selected_blocks()
+        unit = self._indent_unit()
+        cur = self.textCursor()
+        cur.beginEditBlock()
+        b = start
+        while b.isValid() and b.blockNumber() <= end.blockNumber():
+            text = b.text()
+            if text.strip():
+                c = QTextCursor(b)
+                inner = len(re.match(r'<p style="[^"]*">', text).group()) if para_style(text) else 0
+                c.setPosition(b.position() + inner)
+                if delta > 0:
+                    c.insertText(unit)
+                else:
+                    seg = text[inner:]
+                    n = 1 if seg.startswith("\t") else min(len(unit), len(seg) - len(seg.lstrip(" ")))
+                    if n:
+                        c.setPosition(b.position() + inner + n, QTextCursor.KeepAnchor)
+                        c.removeSelectedText()
+            b = b.next()
+        cur.endEditBlock()
+        return True
+
+    def sort_lines(self, descending=False):
+        """Sorts the selected lines (every line when nothing is selected) A to Z or Z to A, ignoring case."""
+        if self.isReadOnly():
+            return False
+        self.transform_all_or_selection(lambda t: "\n".join(sorted(t.split("\n"), key=lambda s: s.lower(), reverse=descending)))
+        return True
+
+    # ---- paragraph marks: alignment, spacing, shading, borders ---------------------------------------------------------------------
+    PARA_RX = re.compile(r'^<p style="([^"]*)">(.*)</p>$', re.S)
+
+    def paragraph_state(self):
+        """The paragraph properties of the line under the caret: {'text-align': 'center', ...}."""
+        return para_style(self.textCursor().block().text())
+
+    def set_paragraph(self, prop, value):
+        """Sets (or with value None removes) one paragraph property on every selected line: text-align, line-height, background,
+        border or margin-left. The line is wrapped in <p style="...">...</p>; with no property left the wrapper goes."""
+        if not self.format_supported() or self.isReadOnly():
+            return False
+        start, end = self._selected_blocks()
+        cur = self.textCursor()
+        cur.beginEditBlock()
+        b = start
+        while b.isValid() and b.blockNumber() <= end.blockNumber():
+            text = b.text()
+            if text.strip() or b == start:
+                m = self.PARA_RX.match(text)
+                style = para_style(text) if m else {}
+                inner = m.group(2) if m else text
+                if value is None:
+                    style.pop(prop, None)
+                else:
+                    style[prop] = value
+                new = (f'<p style="{";".join(f"{k}:{v}" for k, v in style.items())}">{inner}</p>' if style else inner)
+                if new != text:
+                    c = QTextCursor(b)
+                    c.select(QTextCursor.LineUnderCursor)
+                    c.insertText(new)
+            b = b.next()
+        cur.endEditBlock()
+        self._para_timer.start()
+        return True
+
+    def set_alignment(self, align):
+        return self.set_paragraph("text-align", None if align == "left" else align)
+
+    def set_line_spacing(self, factor):
+        return self.set_paragraph("line-height", None if not factor or float(factor) == 1.0 else f"{float(factor):g}")
+
+    def set_shading(self, color):
+        return self.set_paragraph("background", color or None)
+
+    def set_border(self, spec):
+        return self.set_paragraph("border", spec or None)
+
+    def _refresh_paragraphs(self):
+        """Shading is a real block background; alignment and spacing are drawn by sizing the hidden marks; borders are painted."""
+        if self.read_only_window:
+            return
+        doc = self.document()
+        text = self.toPlainText() if self.length() < 2_000_000 else ""
+        self._has_para = '<p style="' in text
+        if not self._has_para and not self._shaded:
+            return
+        want = {}
+        if self._has_para:
+            for i, line in enumerate(text.split("\n")):
+                if line.startswith('<p style="'):
+                    st = para_style(line)
+                    if "background" in st:
+                        want[i] = QColor(st["background"])
+        for i in sorted(set(self._shaded) | set(want)):
+            blk = doc.findBlockByNumber(i)
+            if not blk.isValid():
+                continue
+            fmt = blk.blockFormat()
+            col = want.get(i)
+            if (col is None and fmt.background().style() == Qt.NoBrush) or (col is not None and fmt.background().color() == col and fmt.background().style() != Qt.NoBrush):
+                continue
+            fmt.setBackground(col) if col is not None else fmt.clearBackground()
+            self._in_para = True
+            QTextCursor(blk).setBlockFormat(fmt)
+            self._in_para = False
+        self._shaded = set(want)
+        if self._has_para:                                       # alignment and spacing depend on the width: size the marks again
+            b = doc.firstBlock()
+            while b.isValid():
+                if b.text().startswith('<p style="'):
+                    self.highlighter.rehighlightBlock(b)
+                b = b.next()
+
+    def _paint_borders(self):
+        if not self._has_para:
+            return
+        p = QPainter(self.viewport())
+        block = self.firstVisibleBlock()
+        bottom = self.viewport().height()
+        group = None
+        x0 = int(self.contentOffset().x() + self.document().documentMargin() - 3)
+        x1 = self.viewport().width() - 5
+
+        def flush():
+            if group is not None:
+                top, bot, spec = group
+                m = re.match(r"(\d+)px\s+(?:\w+\s+)?(#[0-9a-fA-F]{3,8}|\w+)?", spec)
+                w = int(m.group(1)) if m else 1
+                col = QColor(m.group(2)) if m and m.group(2) and QColor(m.group(2)).isValid() else QColor(theme.c("MUTED"))
+                p.setPen(QPen(col, w))
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(x0, int(top) + 1, x1 - x0, int(bot - top) - 2)
+        while block.isValid():
+            geo = self.blockBoundingGeometry(block).translated(self.contentOffset())
+            if geo.top() > bottom:
+                break
+            spec = para_style(block.text()).get("border") if block.isVisible() and block.text().startswith('<p style="') else None
+            if spec and group is not None and group[2] == spec and abs(group[1] - geo.top()) < 2:
+                group = (group[0], geo.bottom(), spec)
+            else:
+                flush()
+                group = (geo.top(), geo.bottom(), spec) if spec else None
+            block = block.next()
+        flush()
+        p.end()
+
+    STYLES = {"Normal": None, "Title": (True, False, 32), "Heading 1": (True, False, 28), "Heading 2": (True, False, 22),
+              "Heading 3": (True, False, 18), "Emphasis": (False, True, 0), "Strong": (True, False, 0), "Quote": (False, True, 0),
+              "Code": (False, False, 0)}
+
+    def apply_style(self, name):
+        """A paragraph style, built from the same marks as everything else (Heading 1 = bold, 28 px ...)."""
+        if not self.format_supported() or self.isReadOnly() or name not in self.STYLES:
+            return False
+        cur = self.textCursor()
+        if not cur.hasSelection():
+            cur.select(QTextCursor.BlockUnderCursor if False else QTextCursor.LineUnderCursor)
+            self.setTextCursor(cur)
+        self.clear_format()
+        spec = self.STYLES[name]
+        if spec is None:
+            return True
+        bold, ital, size = spec
+        if name == "Code":
+            self.set_span("family", "Consolas")
+            self.set_span("bg", "#e8e8e8")
+        elif name == "Quote":
+            self.toggle_format("italic")
+            self.set_span("color", "#6b7482")
+        else:
+            if ital:
+                self.toggle_format("italic")
+            if size:
+                self.set_text_size(size)
+            if bold:
+                self.toggle_format("bold")
+        return True
+
+    def comment_selection(self):
+        """New Comment: a comment in the document's own syntax around the selection (or on the line)."""
+        if self.isReadOnly():
+            return False
+        if self.lang.comment:
+            self.toggle_comment()
+            return True
+        cur = self.textCursor()
+        if not cur.hasSelection():
+            cur.select(QTextCursor.LineUnderCursor)
+        text = cur.selectedText().replace("\u2029", "\n")
+        cur.insertText(f"<!-- {text} -->" if text.strip() else "<!--  -->")
         return True
 
     # ---- the area under a picture is not editable -----------------------------------------------------------------
@@ -2128,6 +2523,17 @@ class CodeEditor(QPlainTextEdit):
             s.format.setProperty(QTextFormat.FullWidthSelection, True)
             s.cursor = QTextCursor(b)
             out.append(s)
+        for line, spans in list(self.span_tint.items())[:2000]:
+            b = doc.findBlockByNumber(line)
+            if not b.isValid():
+                continue
+            for st, en, color in spans[:40]:
+                s = QTextEdit.ExtraSelection()
+                s.format.setBackground(color)
+                s.cursor = QTextCursor(doc)
+                s.cursor.setPosition(b.position() + min(st, max(0, b.length() - 1)))
+                s.cursor.setPosition(b.position() + min(max(en, st), max(0, b.length() - 1)), QTextCursor.KeepAnchor)
+                out.append(s)
         return out
 
     def _diag_selections(self):
@@ -2409,6 +2815,7 @@ class CodeEditor(QPlainTextEdit):
         super().paintEvent(e)
         self._paint_indent_guides()
         self._paint_fold_pills()
+        self._paint_borders()
         self._paint_extra_carets()
         previews = self._visible_previews()
         self._preview_rects = []

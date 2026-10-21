@@ -1419,6 +1419,127 @@ def selftest():
         ed.path = None
         ed.document().setModified(False)
 
+    def t_word_style_toolbar():
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QWidgetAction
+        from lavatinoter import richtext
+        from lavatinoter.minitoolbar import MiniToolbar
+        ed = win.new_file("hello big world\nsecond line\nthird line\n")
+        ed.lang_auto = False
+
+        def select(a, b):
+            c = ed.textCursor()
+            c.setPosition(a)
+            c.setPosition(b, QTextCursor.KeepAnchor)
+            ed.setTextCursor(c)
+        select(6, 9)
+        assert ed.set_text_color("#d32f2f") and ed.toPlainText().startswith('hello <span style="color:#d32f2f">big</span> world')
+        assert ed.set_highlight("#fff176") and ed.set_font_family("Consolas")
+        assert ed.toggle_format("bold")
+        raw = ed.toPlainText().split("\n")[0]
+        assert richtext.strip_marks(raw) == "hello big world", richtext.strip_marks(raw)
+        h = richtext.marks_to_html(raw, fragment=True)
+        assert "color:#d32f2f" in h and "background-color:#fff176" in h and "font-family:Consolas" in h and "<b>" in h, h
+        # the visible text keeps every look at once (nothing hides)
+        runs = [(r.start, r.length, r.format.foreground().color().alpha()) for r in ed.document().firstBlock().layout().formats()]
+        assert any(a > 0 for _s, _l, a in runs)
+        # changing a colour replaces it, "no colour" removes it
+        select(ed.toPlainText().index("big"), ed.toPlainText().index("big") + 3)
+        assert ed.set_text_color("#1565c0") and ed.toPlainText().count("color:#") == 1 and "#1565c0" in ed.toPlainText()
+        for k in ("color", "bg", "family"):
+            ed.set_span(k, None)
+        ed.toggle_format("bold")
+        assert ed.toPlainText().split("\n")[0] == "hello big world", ed.toPlainText().split("\n")[0]
+        # lists
+        select(ed.document().findBlockByNumber(1).position(), ed.document().findBlockByNumber(2).position() + 10)
+        assert ed.toggle_list(False) and ed.toPlainText().split("\n")[1:3] == ["- second line", "- third line"]
+        assert ed.toggle_list(True) and ed.toPlainText().split("\n")[1:3] == ["1. second line", "2. third line"]
+        assert ed.toggle_list(True) and ed.toPlainText().split("\n")[1:3] == ["second line", "third line"]
+        # styles and comments
+        select(0, 5)
+        assert ed.apply_style("Heading 1")
+        line = ed.toPlainText().split("\n")[0]
+        assert "font-size:28px" in line and "**" in line, line
+        assert ed.apply_style("Normal") and ed.toPlainText().split("\n")[0] == "hello big world"
+        select(0, 5)
+        ed.comment_selection()
+        assert ed.toPlainText().startswith("<!-- hello --> big world"), ed.toPlainText()
+        # the box is on top of the right-click menu
+        menu = ed.build_context_menu(QPoint(10, 10))
+        boxes = [a.defaultWidget() for a in menu.actions() if isinstance(a, QWidgetAction)]
+        assert boxes and isinstance(boxes[0], MiniToolbar)
+        assert [b.text() for b in boxes[0].findChildren(type(boxes[0].styles_btn))][:1] if hasattr(boxes[0], "styles_btn") else True
+        code = win.new_file("x = 1")
+        from lavatinoter.highlighter import PYTHON
+        code.set_language(PYTHON)
+        code.lang_auto = False
+        assert not any(isinstance(a, QWidgetAction) for a in code.build_context_menu(QPoint(10, 10)).actions()), "no formatting box in code files"
+        ed.document().setModified(False)
+        code.document().setModified(False)
+
+    def t_paragraph_group():
+        from lavatinoter import richtext
+        ed = win.new_file("centre me\nplain line\nzebra\napple\nMango\n")
+        ed.lang_auto = False
+        win.resize(1000, 700)
+        win.show()
+        pump(30)
+        ed.setTextCursor(QTextCursor(ed.document().firstBlock()))
+        assert ed.set_alignment("center")
+        line = ed.toPlainText().split("\n")[0]
+        assert line == '<p style="text-align:center">centre me</p>', line
+        assert ed.paragraph_state() == {"text-align": "center"}
+        # the hidden opening mark is sized to push the text to the middle (the text itself does not move in the file)
+        pump(60)
+        sizes = [(r.start, r.length, r.format.fontPointSize()) for r in ed.document().firstBlock().layout().formats()]
+        assert any(s == 0 and ln == len('<p style="text-align:center">') and pt > 5 for s, ln, pt in sizes), sizes
+        assert richtext.strip_marks(line) == "centre me"
+        h = richtext.marks_to_html(line, fragment=True)
+        assert 'text-align:center' in h and "centre me" in h and "<p" not in h, h
+        # several properties on one line, and each can be removed again
+        assert ed.set_line_spacing(1.5) and ed.set_shading("#fff176") and ed.set_border("1px solid #888")
+        st = ed.paragraph_state()
+        assert st["line-height"] == "1.5" and st["background"] == "#fff176" and st["border"] == "1px solid #888" and st["text-align"] == "center", st
+        pump(400)
+        assert ed.document().firstBlock().blockFormat().background().color().name() == "#fff176"      # shading is a real block background
+        assert ed.set_alignment("left") and ed.set_shading(None) and ed.set_border(None) and ed.set_line_spacing(1.0)
+        pump(400)
+        assert ed.toPlainText().split("\n")[0] == "centre me"
+        assert ed.document().firstBlock().blockFormat().background().style() == Qt.NoBrush
+        # indent, sort, lists
+        c = QTextCursor(ed.document().findBlockByNumber(2))
+        c.setPosition(c.position())
+        c.setPosition(ed.document().findBlockByNumber(4).position() + 5, QTextCursor.KeepAnchor)
+        ed.setTextCursor(c)
+        assert ed.sort_lines(False)
+        assert ed.toPlainText().split("\n")[2:5] == ["apple", "Mango", "zebra"], ed.toPlainText()
+        assert ed.change_indent(1) and ed.toPlainText().split("\n")[2] == "    apple"
+        assert ed.change_indent(-1) and ed.toPlainText().split("\n")[2] == "apple"
+        ed.setPlainText("one\n    two\n        three\n    four\nfive\n")
+        ed.selectAll()
+        assert ed.multilevel_list()
+        assert ed.toPlainText().split("\n")[:5] == ["1. one", "    a. two", "        i. three", "    b. four", "2. five"], ed.toPlainText()
+        ed.setPlainText("x\ny\n")
+        ed.selectAll()
+        assert ed.toggle_list(True, "a.") and ed.toPlainText().startswith("a. x\nb. y")
+        assert ed.toggle_list(True, "I.") and ed.toPlainText().startswith("I. x\nII. y")
+        assert ed.toggle_list(False, "•") and ed.toPlainText().startswith("• x\n• y")
+        assert ed.toggle_list(False, "•") and ed.toPlainText().startswith("x\ny")
+        # the toolbar buttons follow the caret
+        ed.setPlainText("hello\n")
+        ed.selectAll()
+        win._para_call("set_alignment", "right")
+        ed.moveCursor(QTextCursor.Start)
+        win._sync_para_buttons()
+        assert win.align_buttons["right"].isChecked() and not win.align_buttons["left"].isChecked()
+        code = win.new_file("x = 1")
+        from lavatinoter.highlighter import PYTHON
+        code.set_language(PYTHON)
+        code.lang_auto = False
+        assert not code.set_alignment("center") and code.toPlainText() == "x = 1"          # code files are left alone
+        ed.document().setModified(False)
+        code.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -1428,7 +1549,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("Word-style mini toolbar", t_word_style_toolbar), ("Paragraph group (align, spacing, shading, lists, sort)", t_paragraph_group), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

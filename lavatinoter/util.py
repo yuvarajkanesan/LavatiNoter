@@ -125,6 +125,7 @@ DEFAULTS = {
     "autocorrect": True,
     "autocomplete": True,
     "autoclose": True,
+    "compare_options": {},
     "search_url": "https://www.google.com/search?q={q}",
     "copy_style": "styled",
     "lsp_enabled": False,

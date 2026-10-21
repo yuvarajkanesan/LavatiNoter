@@ -2,7 +2,7 @@
 import os
 import re
 
-from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QSyntaxHighlighter, QTextCharFormat
 
 from . import theme, util
 from .spell import WORD, speller
@@ -337,8 +337,69 @@ _RICH_RULES = [
     (re.compile(r"(?<![\w_])_(?=[^\s_])(.+?)(?<=[^\s_])_(?![\w_])"), "italic"),
     (re.compile(r"<i>(.+?)</i>", re.I), "italic"),
     (re.compile(r"<u>(.+?)</u>", re.I), "underline"),
-    (re.compile(r"(<span style=\"font-size:\s*(\d+)px\">)(.+?)(</span>)", re.I), "size"),
 ]
+SPAN_KINDS = ("size", "family", "color", "bg", "para")
+_SPAN_PROPS = {"font-size": "size", "font-family": "family", "color": "color", "background": "bg"}
+_TAG = re.compile(r'<span style="([a-z-]+):\s*([^";]+)">|</span>|<p style="([^"]*)">|</p>', re.I)
+
+
+class SpanMatch:
+    """Looks like a regex match for a <span style="prop:value">text</span> or <p style="...">text</p> pair (so the rest of the code
+    treats every kind of mark the same). group(1) = the opening tag, group(2) = the value, group(3) = the text inside,
+    group(4) = the closing tag."""
+
+    def __init__(self, text, o1, o2, c1, c2, value):
+        self.text, self._o, self._c, self.value = text, (o1, o2), (c1, c2), value
+
+    def start(self, n=0):
+        return self._o[0]
+
+    def end(self, n=0):
+        return self._c[1]
+
+    def span(self, n=0):
+        return {0: (self._o[0], self._c[1]), 1: self._o, 2: self._o, 3: (self._o[1], self._c[0]), 4: self._c}[n]
+
+    def group(self, n=0):
+        if n == 2:
+            return self.value
+        a, b = self.span(n)
+        return self.text[a:b]
+
+
+def _span_matches(text):
+    """Pairs of <span style> / </span> and <p style> / </p> found with a stack, so they nest correctly."""
+    out, stack = [], []
+    for m in _TAG.finditer(text):
+        tok = m.group(0)
+        low = tok.lower()
+        if low.startswith("<span"):
+            kind = _SPAN_PROPS.get(m.group(1).lower())
+            if kind:
+                stack.append(("span", kind, m.start(), m.end(), m.group(2).strip()))
+        elif low.startswith("<p"):
+            stack.append(("p", "para", m.start(), m.end(), m.group(3)))
+        else:
+            want = "span" if low == "</span>" else "p"
+            for k in range(len(stack) - 1, -1, -1):
+                if stack[k][0] == want:
+                    _t, kind, o1, o2, value = stack.pop(k)
+                    out.append((kind, SpanMatch(text, o1, o2, m.start(), m.end(), value)))
+                    break
+    return out
+
+
+def para_style(text):
+    """{property: value} of the <p style="..."> mark that wraps a whole line, or {}."""
+    m = re.match(r'^<p style="([^"]*)">.*</p>$', text)
+    if not m:
+        return {}
+    d = {}
+    for part in m.group(1).split(";"):
+        if ":" in part:
+            k, v = part.split(":", 1)
+            d[k.strip().lower()] = v.strip()
+    return d
 
 
 def rich_matches(text):
@@ -348,7 +409,11 @@ def rich_matches(text):
     out = []
     for rx, kind in _RICH_RULES:
         for m in rx.finditer(text):
-            a, b = m.span(3) if kind == "size" else m.span(1)
+            a, b = m.span(1)
+            out.append((kind, m, a, b))
+    if "<span" in text or "<p " in text:
+        for kind, m in _span_matches(text):
+            a, b = m.span(3)
             out.append((kind, m, a, b))
     return out
 
@@ -366,6 +431,7 @@ class Highlighter(QSyntaxHighlighter):
         super().__init__(document)
         self.lang = PLAIN
         self.spell_on = False
+        self.view = None                    # the editor, so paragraph marks can measure the line (alignment, line height)
         self.fmts = {}
         self.rebuild_formats()
 
@@ -411,7 +477,10 @@ class Highlighter(QSyntaxHighlighter):
         for a, b in marks:
             mark_chars.update(range(a, b))
         for kind, m, a, b in matches:                       # formatting of the visible text first ...
-            px = int(m.group(2)) if kind == "size" else 0
+            px = int(re.sub(r"\D", "", m.group(2)) or 0) if kind == "size" else 0
+            value = m.group(2).strip() if kind in ("family", "color", "bg") else ""
+            if kind == "para":
+                continue                                    # paragraph marks style the line, not the letters
             for i in range(a, b):
                 if i in mark_chars:
                     continue
@@ -422,10 +491,17 @@ class Highlighter(QSyntaxHighlighter):
                     fmt.setFontItalic(True)
                 elif kind == "underline":
                     fmt.setFontUnderline(True)
+                elif kind == "family":
+                    fmt.setFontFamilies([value])
+                elif kind == "color":
+                    fmt.setForeground(QColor(value))
+                elif kind == "bg":
+                    fmt.setBackground(QColor(value))
                 else:
                     fmt.setFontPointSize(max(6.0, min(80.0, px * 0.75)))
                 self.setFormat(i, 1, fmt)
         hide = QColor(0, 0, 0, 0)
+        special = self._para_marks(text, matches)
         for a, b in marks:                                  # ... then the marks themselves, last, so nothing inherits their look
             for i in range(a, b):
                 fmt = self.format(i)
@@ -436,11 +512,52 @@ class Highlighter(QSyntaxHighlighter):
                     fmt.setFontUnderline(False)
                 else:
                     fmt.setForeground(hide)
-                    fmt.setFontPointSize(0.1)
+                    fmt.setFontPointSize(special.get((a, b), 0.1))
                     fmt.setFontUnderline(False)
                     fmt.setFontWeight(QFont.Normal)
                     fmt.setFontItalic(False)
                 self.setFormat(i, 1, fmt)
+
+    def _para_marks(self, text, matches):
+        """Sizes for the hidden paragraph marks: the opening one is made as wide as the space the alignment / indent needs, the
+        closing one as tall as the line spacing asks. {(start, end): point size}"""
+        view = self.view
+        out = {}
+        if view is None:
+            return out
+        for kind, m, a, b in matches:
+            if kind != "para":
+                continue
+            st = {}
+            for part in m.group(2).split(";"):
+                if ":" in part:
+                    k, v = part.split(":", 1)
+                    st[k.strip().lower()] = v.strip()
+            fm = QFontMetricsF(view.font())
+            base_pt = max(6.0, view.font().pointSizeF())
+            visible = "".join(text[i] for i in range(a, b))
+            visible = re.sub(r"<[^>]*>|\*\*|(?<![\w])_|_(?![\w])", "", visible)
+            avail = view.viewport().width() - 2 * view.document().documentMargin() - 6
+            pad = 0.0
+            ml = re.match(r"(\d+)", st.get("margin-left", ""))
+            if ml:
+                pad += int(ml.group(1))
+            align = st.get("text-align", "left")
+            width = fm.horizontalAdvance(visible)
+            if align == "center":
+                pad += max(0.0, (avail - width - pad) / 2)
+            elif align == "right":
+                pad += max(0.0, avail - width - pad)
+            opening = text[m.span(1)[0]:m.span(1)[1]]
+            if pad > 1:
+                ref = QFont(view.font())
+                ref.setPointSizeF(20.0)
+                w20 = QFontMetricsF(ref).horizontalAdvance(opening)
+                out[m.span(1)] = max(0.1, min(900.0, 20.0 * pad / max(1.0, w20)))
+            lh = re.match(r"([\d.]+)", st.get("line-height", ""))
+            if lh and float(lh.group(1)) > 1.0:
+                out[m.span(4)] = base_pt * min(6.0, float(lh.group(1)))
+        return out
 
     def _spell(self, text):
         """Red squiggle under misspelled words: everywhere in plain text / Markdown, only in comments and strings in code."""

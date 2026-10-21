@@ -5,7 +5,7 @@ import sys
 import time
 
 from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import (QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence,
+from PySide6.QtGui import (QIcon, QPixmap, QColor, QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence,
                            QTextCursor)
 from PySide6.QtWidgets import (QSplitter, QApplication, QCheckBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QFormLayout,
                                QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
@@ -19,6 +19,7 @@ from .highlighter import LANGS, PLAIN, lang_by_name, lang_for_path
 from .largefile import GoToPanel, LargeFileView
 from . import search
 from .palette import Picker, fuzzy
+from .minitoolbar import HIGHLIGHTS
 from .panels import FunctionsPanel, ImagePreview, ImagesPanel, MinimapWidget, ResultsPanel, WorkspacePanel, reveal_in_explorer
 
 MB = 1024 * 1024
@@ -349,6 +350,7 @@ class MainWindow(QMainWindow):
         self.a_split = A("Clone Tab to Split View", self.open_split, "Ctrl+\\", None, tip="Shows the same document in a second pane beside it")
         self.a_split_flip = A("Switch Split Direction", self.flip_split)
         self.a_split_close = A("Close Split View", self.close_split)
+        self.a_view_para = A("Paragraph Toolbar", self.toggle_para_toolbar, None, None, True, True)
         self.a_find = A("Find...", lambda: self.find_dialog.show_tab(0, self._selected_text()), S.Find, "find", tip="Find (Ctrl+F)")
         self.a_replace = A("Replace...", lambda: self.find_dialog.show_tab(1, self._selected_text()), "Ctrl+H", "replace", tip="Replace (Ctrl+H)")
         self.a_find_files = A("Find in Files...", lambda: self.find_dialog.show_tab(2, self._selected_text()), "Ctrl+Shift+F")
@@ -448,6 +450,18 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_format_doc)
         m.addAction(self.a_minify)
         m.addAction(self.a_validate)
+        pm = m.addMenu("Paragraph")
+        for item in (("Align Left", "set_alignment", ("left",)), ("Center", "set_alignment", ("center",)), ("Align Right", "set_alignment", ("right",)),
+                                 ("Justify", "set_alignment", ("justify",)), None, ("Increase Indent", "change_indent", (1,)),
+                                 ("Decrease Indent", "change_indent", (-1,)), None, ("Bullets", "toggle_list", (False,)), ("Numbering", "toggle_list", (True,)),
+                                 ("Multilevel List", "multilevel_list", ()), None, ("Sort A to Z", "sort_lines", (False,)), ("Sort Z to A", "sort_lines", (True,))):
+            if item is None:
+                pm.addSeparator()
+            else:
+                text, name, args = item
+                pm.addAction(text, lambda _=False, n=name, a=args: self._para_call(n, *a))
+        pm.addSeparator()
+        pm.addAction(self.a_view_para)
         sz = m.addMenu("Text Size")
         for px in (10, 12, 14, 18, 24, 32, 48):
             sz.addAction(f"{px} px", lambda _=False, v=px: self._size(px=v))
@@ -545,6 +559,94 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_about)
         m.addAction(self.a_diag)
 
+    def _para_button(self, icon, tip, fn=None, menu=None, checkable=False):
+        b = QToolButton()
+        b.setIcon(theme.icon(icon, theme.c("MUTED"), 20))
+        b.setToolTip(tip)
+        b.setCheckable(checkable)
+        if menu is not None:
+            b.setMenu(menu)
+            b.setPopupMode(QToolButton.MenuButtonPopup if fn else QToolButton.InstantPopup)
+        if fn is not None:
+            b.clicked.connect(lambda _=False, f=fn: f())
+        self._para_buttons.append((b, icon))
+        return b
+
+    def _build_para_toolbar(self):
+        """The Paragraph group of a word processor: lists, indents, sort, alignment, line spacing, shading and borders."""
+        self._para_buttons = []
+        self.addToolBarBreak()
+        tb = self.addToolBar("Paragraph")
+        tb.setObjectName("para-toolbar")
+        tb.setMovable(False)
+        tb.setIconSize(QSize(20, 20))
+        call = lambda name, *a: (lambda: self._para_call(name, *a))
+        # bullets and numbering: the button applies the last style, the arrow lists the styles
+        bm = QMenu(self)
+        for ch, label in (("-", "- Dash"), ("*", "* Asterisk"), ("+", "+ Plus"), ("\u2022", "\u2022 Round bullet"), ("\u25e6", "\u25e6 Hollow bullet"), ("\u25aa", "\u25aa Square bullet")):
+            bm.addAction(label, call("toggle_list", False, ch))
+        nm = QMenu(self)
+        for st, label in (("1.", "1.  2.  3."), ("1)", "1)  2)  3)"), ("a.", "a.  b.  c."), ("A.", "A.  B.  C."), ("i.", "i.  ii.  iii."), ("I.", "I.  II.  III.")):
+            nm.addAction(label, call("toggle_list", True, st))
+        tb.addWidget(self._para_button("bullets", "Bullets", call("toggle_list", False), bm))
+        tb.addWidget(self._para_button("numbering", "Numbering", call("toggle_list", True), nm))
+        tb.addWidget(self._para_button("multilevel", "Multilevel list: the indent of each line sets its level", call("multilevel_list")))
+        tb.addSeparator()
+        tb.addWidget(self._para_button("indentdec", "Decrease indent", call("change_indent", -1)))
+        tb.addWidget(self._para_button("indentinc", "Increase indent", call("change_indent", 1)))
+        tb.addSeparator()
+        sm = QMenu(self)
+        sm.addAction("Sort A to Z", call("sort_lines", False))
+        sm.addAction("Sort Z to A", call("sort_lines", True))
+        tb.addWidget(self._para_button("sort", "Sort the selected lines (A to Z)", call("sort_lines", False), sm))
+        tb.addSeparator()
+        self.align_buttons = {}
+        for name, icon in (("left", "alignleft"), ("center", "aligncenter"), ("right", "alignright"), ("justify", "alignjustify")):
+            b = self._para_button(icon, f"Align {name}", call("set_alignment", name), checkable=True)
+            self.align_buttons[name] = b
+            tb.addWidget(b)
+        lm = QMenu(self)
+        for f in (1.0, 1.15, 1.5, 2.0, 2.5, 3.0):
+            lm.addAction(f"{f:g}", call("set_line_spacing", f))
+        tb.addWidget(self._para_button("linespacing", "Line spacing", menu=lm))
+        shm = QMenu(self)
+        for name, col in HIGHLIGHTS:
+            pm = QPixmap(14, 14)
+            pm.fill(QColor(col))
+            shm.addAction(QIcon(pm), name, call("set_shading", col))
+        shm.addSeparator()
+        shm.addAction("No shading", call("set_shading", None))
+        tb.addWidget(self._para_button("shading", "Shading: colour behind the whole line", call("set_shading", HIGHLIGHTS[0][1]), shm))
+        bom = QMenu(self)
+        bom.addAction("Box", call("set_border", "1px solid #8a93a6"))
+        bom.addAction("Thick box", call("set_border", "2px solid #8a93a6"))
+        bom.addAction("Blue box", call("set_border", "1px solid #2f6fe8"))
+        bom.addSeparator()
+        bom.addAction("No border", call("set_border", None))
+        tb.addWidget(self._para_button("borders", "Border around the lines", menu=bom))
+        self.para_toolbar = tb
+
+    def _para_call(self, name, *args):
+        ed = self.editor_of(self.current())
+        if ed is None or self.current().is_large:
+            return
+        if not ed.format_supported() and name in ("set_alignment", "set_line_spacing", "set_shading", "set_border"):
+            self.flash("Alignment, spacing, shading and borders work in text, Markdown and HTML documents.")
+            return
+        if getattr(ed, name)(*args) is False:
+            self.flash("That needs a document you can edit.")
+        self._sync_para_buttons()
+
+    def _sync_para_buttons(self):
+        ed = self.editor_of(self.current())
+        state = ed.paragraph_state() if ed is not None and not self.current().is_large else {}
+        align = state.get("text-align", "left")
+        for name, b in self.align_buttons.items():
+            b.setChecked(name == align)
+
+    def toggle_para_toolbar(self, on=None):
+        self.para_toolbar.setVisible(self.a_view_para.isChecked())
+
     def _build_toolbar(self):
         tb = self.addToolBar("Main")
         tb.setObjectName("main-toolbar")
@@ -556,6 +658,7 @@ class MainWindow(QMainWindow):
                   self.a_zoom_in, self.a_zoom_out, None, self.view_wrap, self.view_ws, self.view_map):
             tb.addSeparator() if a is None else tb.addAction(a)
         self.toolbar = tb
+        self._build_para_toolbar()
 
     def _build_status(self):
         sb = self.statusBar()
@@ -599,6 +702,8 @@ class MainWindow(QMainWindow):
         for a, icon in self._icon_actions:
             a.setIcon(theme.icon(icon, k("MUTED")))
         self.plus.setIcon(theme.icon("plus", k("MUTED"), 18))
+        for b, icon in getattr(self, "_para_buttons", []):
+            b.setIcon(theme.icon(icon, k("MUTED"), 20))
         self.results.close_btn.setIcon(theme.icon("close", k("MUTED"), 16))
         theme.set_titlebar(self)
         for page in self.all_tabs():
@@ -1555,14 +1660,24 @@ class MainWindow(QMainWindow):
     def _text_of(self, page):
         return page.toPlainText()
 
-    def _show_diff(self, lt, rt, old, new, left_apply=None, right_apply=None, lang=None, left_label="Apply", right_label="Apply"):
+    def _compare_options(self, lang=None):
+        o = diffview.cc.Options.from_dict(self.settings["compare_options"])
+        return o
+
+    def _show_diff(self, lt, rt, old, new, left_apply=None, right_apply=None, lang=None, left_label="Apply", right_label="Apply",
+                   left_side=None, right_side=None, base_side=None, mode="2way", options=None, anchors=None):
+        """Opens the Compare window. Sides can be given ready-made (files with an encoding) or as titles and text."""
+        left = left_side or diffview.Side(lt, old, left_apply, left_label)
+        right = right_side or diffview.Side(rt, new, right_apply, right_label)
         try:
-            d = diffview.DiffWindow(self, lt, rt, old, new, left_apply, right_apply, lang, self.settings["font_size"], left_label, right_label)
+            d = diffview.DiffWindow(self, left, right, base_side, lang, self.settings["font_size"], options or self._compare_options(lang), self,
+                                    anchors, mode)
         except ValueError as e:
             self.flash(str(e))
-            return
+            return None
         d.setAttribute(Qt.WA_DeleteOnClose, True)
         d.show()
+        return d
 
     def _tab_apply(self, page):
         """A callable that puts text back into a tab (undoable there; save the tab to keep it)."""
@@ -2580,6 +2695,7 @@ class MainWindow(QMainWindow):
         if a:
             a.setChecked(True)
         self.a_auto_lang.setChecked(bool(getattr(page, "lang_auto", False)))
+        self._sync_para_buttons()
         e = self.enc_actions.get(page.encoding)
         if e:
             e.setChecked(True)
