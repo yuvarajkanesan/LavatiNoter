@@ -566,15 +566,18 @@ class MainWindow(QMainWindow):
 
     def _para_button(self, icon, tip, fn=None, menu=None, checkable=False):
         b = QToolButton()
-        b.setIcon(theme.icon(icon, theme.c("MUTED"), 20))
+        dd = menu is not None and fn is None                  # a menu-only button gets its arrow drawn inside the icon
+        b.setIcon(theme.icon(icon, theme.c("MUTED"), 20, dropdown=dd))
         b.setToolTip(tip)
         b.setCheckable(checkable)
         if menu is not None:
             b.setMenu(menu)
             b.setPopupMode(QToolButton.MenuButtonPopup if fn else QToolButton.InstantPopup)
+            b.setStyleSheet("QToolButton::menu-indicator { image: none; width: 0px; }" if dd else
+                            "QToolButton::menu-button { width: 12px; border: none; }")
         if fn is not None:
             b.clicked.connect(lambda _=False, f=fn: f())
-        self._para_buttons.append((b, icon))
+        self._para_buttons.append((b, icon, dd))
         return b
 
     def _build_para_toolbar(self):
@@ -707,8 +710,8 @@ class MainWindow(QMainWindow):
         for a, icon in self._icon_actions:
             a.setIcon(theme.icon(icon, k("MUTED")))
         self.plus.setIcon(theme.icon("plus", k("MUTED"), 18))
-        for b, icon in getattr(self, "_para_buttons", []):
-            b.setIcon(theme.icon(icon, k("MUTED"), 20))
+        for b, icon, dd in getattr(self, "_para_buttons", []):
+            b.setIcon(theme.icon(icon, k("MUTED"), 20, dropdown=dd))
         self.results.close_btn.setIcon(theme.icon("close", k("MUTED"), 16))
         theme.set_titlebar(self)
         for page in self.all_tabs():

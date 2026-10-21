@@ -6,7 +6,7 @@ import re
 import time
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QStringListModel, Qt, QTimer, Signal
-from PySide6.QtGui import (QIcon, QGuiApplication, QAction, QColor, QPen, QFont, QFontMetricsF, QImage, QPainter, QPixmap, QTextCharFormat, QTextCursor, QTextFormat,
+from PySide6.QtGui import (QIcon, QGuiApplication, QAction, QColor, QPen, QFont, QFontMetricsF, QImage, QPainter, QPalette, QPixmap, QTextCharFormat, QTextCursor, QTextFormat,
                            QTextOption, QTextBlockUserData)
 from PySide6.QtWidgets import QWidgetAction, QMenu, QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
@@ -2825,11 +2825,14 @@ class CodeEditor(QPlainTextEdit):
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         ls = self.fontMetrics().lineSpacing()
         cur_block = self.textCursor().block()
+        sel_a, sel_b = self.textCursor().selectionStart(), self.textCursor().selectionEnd()
         for block, s, e2, pm, blanks in previews:
             geo = self.blockBoundingGeometry(block).translated(self.contentOffset())
             x = int(self.contentOffset().x() + self.document().documentMargin() + 2)
             y = int(geo.top()) if block.blockNumber() != self._edit_link else int(geo.bottom()) + 2     # while the link is edited the picture sits below it
             w, h = self._preview_size(pm, blanks)
+            if sel_a < sel_b and block.blockNumber() != self._edit_link:
+                self._cover_selected_path(p, block, s, e2, sel_a, sel_b)
             p.drawPixmap(x, y + 2, pm.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             selected = block.blockNumber() == self._img_sel
             p.setPen(QPen(QColor(theme.c("ACCENT")), 2) if selected else QColor(theme.c("BORDER2")))
@@ -2837,6 +2840,23 @@ class CodeEditor(QPlainTextEdit):
             p.drawRect(x - 1, y + 1, w + 1, h + 1)
             self._preview_rects.append((QRect(x, y + 2, w, h), block))
         p.end()
+
+    def _cover_selected_path(self, p, block, s, e, sel_a, sel_b):
+        """A selected picture path is painted in the selection's text colour, which a transparent extra selection cannot hide:
+        paint the selection colour over the path's text so only the picture shows."""
+        start, end = block.position() + s, block.position() + e
+        if sel_b <= start or sel_a >= end:
+            return
+        c = QTextCursor(self.document())
+        c.setPosition(start)
+        r1 = self.cursorRect(c)
+        c.setPosition(end)
+        r2 = self.cursorRect(c)
+        if r1.top() != r2.top():                              # a wrapped path: cover the whole width of the lines it takes
+            r2.setLeft(self.viewport().width())
+            r2.setTop(r1.top())
+        p.fillRect(QRect(r1.left(), r1.top(), max(0, r2.left() - r1.left()) + 2, r2.bottom() - r1.top() + 1),
+                   QColor(theme.c("SEL_BG")))
 
     def image_reference(self, abs_path):
         """The text inserted for a pasted picture, in the syntax of the document's language."""

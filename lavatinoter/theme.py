@@ -387,23 +387,30 @@ def _ic_fontcolor(p):
 
 
 def _ic_bullets(p):
+    pen = p.pen()
+    p.setPen(Qt.NoPen)
+    p.setBrush(pen.color())
     for y in (6, 12, 18):
-        p.drawPoint(5, y)
-        p.drawLine(9, y, 20, y)
-    p.setPen(QPen(p.pen().color(), 3.2))
+        p.drawEllipse(QRectF(2.8, y - 1.9, 3.8, 3.8))
+    p.setPen(pen)
     for y in (6, 12, 18):
-        p.drawPoint(5, y)
+        p.drawLine(10, y, 21, y)
 
 
 def _ic_numbering(p):
     for y in (6, 12, 18):
-        p.drawLine(10, y, 20, y)
-    f = QFont(ui_family())
-    f.setPixelSize(7)
-    f.setBold(True)
-    p.setFont(f)
-    for n, y in ((1, 6), (2, 12), (3, 18)):
-        p.drawText(QRectF(2, y - 4, 7, 8), Qt.AlignCenter, str(n))
+        p.drawLine(11, y, 21, y)
+    p.save()
+    pen = QPen(p.pen().color(), 1.5)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    p.setPen(pen)
+    _poly(p, [(3.2, 4.6), (5.2, 3.2), (5.2, 8.6)])
+    y = 12
+    _poly(p, [(3.2, y - 1.8), (4.2, y - 3), (6.2, y - 3), (7.0, y - 1.8), (7.0, y - 0.6), (3.2, y + 3), (7.2, y + 3)])
+    y = 18
+    _poly(p, [(3.2, y - 3), (7.0, y - 3), (5.2, y - 0.4), (6.6, y + 0.4), (7.0, y + 1.6), (6.2, y + 3), (4.2, y + 3), (3.2, y + 2)])
+    p.restore()
 
 
 def _ic_clearfmt(p):
@@ -424,10 +431,14 @@ def _ic_styles(p):
 
 
 def _ic_multilevel(p):
-    for x, y, w in ((8, 6, 12), (12, 12, 8), (16, 18, 4)):
-        p.drawLine(x, y, x + w, y)
-    for x, y in ((4, 6), (8, 12), (12, 18)):
-        p.drawPoint(x, y)
+    pen = p.pen()
+    p.setPen(Qt.NoPen)
+    p.setBrush(pen.color())
+    for x, y in ((3, 5), (7, 12), (11, 19)):
+        p.drawEllipse(QRectF(x - 1.6, y - 1.6, 3.2, 3.2))
+    p.setPen(pen)
+    for x, y in ((8, 5), (12, 12), (16, 19)):
+        p.drawLine(x, y, 21, y)
 
 
 def _ic_indentinc(p):
@@ -447,16 +458,16 @@ def _ic_indentdec(p):
 
 
 def _ic_sort(p):
-    _glyph(p, "A", 9, bold=True, dx=-6.5)
     p.save()
     f = QFont(ui_family())
-    f.setPixelSize(9)
+    f.setPixelSize(11)
     f.setBold(True)
     p.setFont(f)
-    p.drawText(QRectF(-1.5, 11.5, 10, 10), Qt.AlignCenter, "Z")
+    p.drawText(QRectF(2, 2.5, 11, 10), Qt.AlignCenter, "A")
+    p.drawText(QRectF(2, 12, 11, 10), Qt.AlignCenter, "Z")
     p.restore()
-    p.drawLine(16.5, 5, 16.5, 19)
-    _poly(p, [(13.5, 16), (16.5, 19.5), (19.5, 16)])
+    p.drawLine(18, 4.5, 18, 19)
+    _poly(p, [(15, 15.5), (18, 19.5), (21, 15.5)])
 
 
 def _ic_align(p, mode):
@@ -529,7 +540,8 @@ def _ic_map(p):
 _ICONS = {n[4:]: f for n, f in globals().items() if n.startswith("_ic_")}
 
 
-def icon(name, color=None, size=20):
+def icon(name, color=None, size=20, dropdown=False):
+    """A painted icon; dropdown=True shrinks it and adds a small arrow in the corner (for buttons that open a menu)."""
     color = color or c("MUTED")
     pm = QPixmap(size * 2, size * 2)
     pm.setDevicePixelRatio(2)
@@ -538,7 +550,15 @@ def icon(name, color=None, size=20):
     p.setRenderHint(QPainter.Antialiasing)
     p.scale(size / 24.0, size / 24.0)
     _pen(p, color)
-    _ICONS.get(name, _ic_file)(p)
+    if dropdown:
+        p.save()
+        p.translate(0.5, 0.5)
+        p.scale(0.82, 0.82)
+        _ICONS.get(name, _ic_file)(p)
+        p.restore()
+        p.drawPolyline([QPointF(17.6, 19.4), QPointF(20.4, 22.2), QPointF(23.2, 19.4)])
+    else:
+        _ICONS.get(name, _ic_file)(p)
     p.end()
     return QIcon(pm)
 

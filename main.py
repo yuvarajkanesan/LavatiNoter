@@ -1631,6 +1631,32 @@ def selftest():
         for pg in (base, left, right):
             pg.document().setModified(False)
 
+    def t_selected_picture_path():
+        from PySide6.QtGui import QImage, QColor
+        ed = win.new_file("")
+        img = QImage(60, 30, QImage.Format_RGB32)
+        img.fill(QColor("#ffffff"))
+        mime = QMimeData()
+        mime.setImageData(img)
+        ed.insertFromMimeData(mime)
+        win.resize(1000, 700)
+        win.show()
+        pump(100)
+        ed.selectAll()
+        pump(100)
+        shot = win.grab().toImage()
+        from PySide6.QtCore import QPoint
+        off = ed.viewport().mapTo(win, QPoint(0, 0))
+        link = next(b for b in iter_blocks(ed) if "image-" in b.text())
+        c = QTextCursor(link)
+        c.setPosition(link.position() + len(link.text()) - 4)
+        r = ed.cursorRect(c)                                   # a spot inside the path, well to the right of the 60 px picture
+        assert r.left() > 120, r
+        # the glyphs of a hidden path leave nothing but the selection colour behind: every pixel of that spot is one colour
+        colours = {shot.pixelColor(off.x() + x, off.y() + y).name() for x in range(r.left() - 18, r.left() + 2) for y in range(r.top() + 2, r.bottom() - 2)}
+        assert len(colours) == 1, colours
+        ed.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -1640,7 +1666,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("Word-style mini toolbar", t_word_style_toolbar), ("Paragraph group (align, spacing, shading, lists, sort)", t_paragraph_group), ("Compare dialogs (merge setup, folders, large files, sessions)", t_compare_dialogs), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("Word-style mini toolbar", t_word_style_toolbar), ("Paragraph group (align, spacing, shading, lists, sort)", t_paragraph_group), ("Compare dialogs (merge setup, folders, large files, sessions)", t_compare_dialogs), ("selected picture hides its path", t_selected_picture_path), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:
