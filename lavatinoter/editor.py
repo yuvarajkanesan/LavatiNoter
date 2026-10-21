@@ -68,6 +68,7 @@ class CodeEditor(QPlainTextEdit):
         self.marks = []                     # [(start, length)] highlighted by the Mark tab
         self._pix_cache = {}
         self.autocomplete_on = False
+        self._edit_link = None             # block number of a picture link being edited by hand (Enter on a selected picture)
         self.copy_styled = True            # plain-text copy of formatted text uses bold / italic look-alike characters
         self.lang_auto = False             # the language follows what the text looks like (new documents, unknown extensions)
         self._auto_rev = -1
@@ -1062,7 +1063,13 @@ class CodeEditor(QPlainTextEdit):
         cur = self.textCursor()
         if cur.hasSelection() or self._in_zone_fix:
             return
+        if self._edit_link is not None and cur.blockNumber() != self._edit_link:
+            self._edit_link = None                          # the caret left the link: it is hidden behind its picture again
         owner = self._zone_owner(cur.block())
+        if owner is None and cur.blockNumber() != self._edit_link:
+            info = self._preview_at(cur.block())            # the link line itself belongs to the picture too
+            if info is not None:
+                owner = (cur.block(), self._zone_blanks(info))
         if owner is None:
             self._prev_block = cur.blockNumber()
             return
@@ -1079,10 +1086,10 @@ class CodeEditor(QPlainTextEdit):
                 self._in_zone_fix = False
                 target = self.document().lastBlock()
         else:
-            target = link
+            target = link.previous() if link.previous().isValid() else link          # moving up: stop above the picture
         self._in_zone_fix = True
         c = QTextCursor(target)
-        if target is link:
+        if target is not link:
             c.movePosition(QTextCursor.EndOfBlock)
         self.setTextCursor(c)
         self._in_zone_fix = False
@@ -1214,6 +1221,7 @@ class CodeEditor(QPlainTextEdit):
         if k in (Qt.Key_Return, Qt.Key_Enter):                  # edit the link text
             c = QTextCursor(self.document().findBlockByNumber(self._img_sel))
             c.movePosition(QTextCursor.EndOfBlock)
+            self._edit_link = self._img_sel
             self._img_sel = None
             self._in_zone_fix = True
             self.setTextCursor(c)
@@ -2038,7 +2046,9 @@ class CodeEditor(QPlainTextEdit):
     PREVIEW_MAX_H = 320
 
     def _preview_lines(self, w, h):
-        scale = min(1.0, self.PREVIEW_MAX_W / max(1, w), self.PREVIEW_MAX_H / max(1, h))
+        x = int(self.contentOffset().x() + self.document().documentMargin() + 2)
+        room = max(40, self.viewport().width() - x - 20)           # a narrow window shows the picture smaller, so it needs fewer lines
+        scale = min(1.0, self.PREVIEW_MAX_W / max(1, w), self.PREVIEW_MAX_H / max(1, h), room / max(1, w))
         return int((h * scale) // max(1, self.fontMetrics().lineSpacing())) + 2
 
     def insert_image_ref(self, abs_path, w=None, h=None):
@@ -2048,6 +2058,8 @@ class CodeEditor(QPlainTextEdit):
         cur = self.textCursor()
         cur.beginEditBlock()
         if cur.positionInBlock() > 0 and cur.block().text().strip():
+            cur.insertText("\n")
+        if not cur.block().previous().isValid():            # the very first line: leave an empty line above the picture
             cur.insertText("\n")
         cur.insertText(self.image_reference(abs_path) + "\n" * (self._preview_lines(w, h) + 1))
         cur.endEditBlock()
@@ -2103,9 +2115,8 @@ class CodeEditor(QPlainTextEdit):
 
     def _image_hide_selections(self):
         out = []
-        cur_block = self.textCursor().block()
         for block, s, e, pm, blanks in self._visible_previews():
-            if block == cur_block:
+            if block.blockNumber() == self._edit_link:
                 continue
             sel = QTextEdit.ExtraSelection()
             sel.format.setForeground(QColor(0, 0, 0, 0))
@@ -2131,7 +2142,7 @@ class CodeEditor(QPlainTextEdit):
         for block, s, e2, pm, blanks in previews:
             geo = self.blockBoundingGeometry(block).translated(self.contentOffset())
             x = int(self.contentOffset().x() + self.document().documentMargin() + 2)
-            y = int(geo.top()) if block != cur_block else int(geo.bottom()) + 2     # while the link is edited the picture sits below it
+            y = int(geo.top()) if block.blockNumber() != self._edit_link else int(geo.bottom()) + 2     # while the link is edited the picture sits below it
             w, h = self._preview_size(pm, blanks)
             p.drawPixmap(x, y + 2, pm.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             selected = block.blockNumber() == self._img_sel

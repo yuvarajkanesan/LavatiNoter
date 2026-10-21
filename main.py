@@ -361,7 +361,7 @@ def selftest():
         # and Up from below skips back over it
         ed.setTextCursor(QTextCursor(ed.document().findBlockByNumber(first_free)))
         QApplication.sendEvent(ed, QKeyEvent(QEvent.KeyPress, Qt.Key_Up, Qt.NoModifier))
-        assert ed.textCursor().blockNumber() == link.blockNumber(), ed.textCursor().blockNumber()
+        assert ed.textCursor().blockNumber() == link.blockNumber() - 1, ed.textCursor().blockNumber()      # stops above the picture
         # clicking the picture selects it; typing does not go behind it
         rect = ed._preview_rects[0][0]
         pt = QPointF(rect.center())
@@ -1222,6 +1222,39 @@ def selftest():
         for e2 in (ed, other, code):
             e2.document().setModified(False)
 
+    def t_picture_link_hidden():
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QImage, QColor, QMouseEvent
+        ed = win.new_file("")
+        img = QImage(300, 120, QImage.Format_RGB32)
+        img.fill(QColor("#ffffff"))
+        mime = QMimeData()
+        mime.setImageData(img)
+        ed.insertFromMimeData(mime)                                              # paste a picture into an empty new tab
+        win.grab()
+        link = next(b for b in iter_blocks(ed) if "image-" in b.text())
+        assert link.blockNumber() >= 1, "there is always a line above the picture"
+        assert ed.textCursor().blockNumber() > link.blockNumber() + 1, "the caret waits below the picture, not on its path"
+        hidden = ed._image_hide_selections()
+        assert hidden and hidden[0].cursor.blockNumber() == link.blockNumber(), "the path is hidden behind the picture"
+        # the words of the path are not underlined as spelling mistakes
+        fmts = [(f.start, f.length, f.format.underlineStyle()) for f in link.layout().formats()]
+        assert not any(u != 0 for _s, _l, u in fmts), fmts
+        # moving the caret up never lands on the path; Enter on the selected picture lets you edit it, and it shows
+        for _ in range(4):
+            QApplication.sendEvent(ed, QKeyEvent(QEvent.KeyPress, Qt.Key_Up, Qt.NoModifier))
+            assert ed.textCursor().blockNumber() != link.blockNumber()
+        win.grab()
+        rect = ed._preview_rects[0][0]
+        pt = QPointF(rect.center())
+        QApplication.sendEvent(ed.viewport(), QMouseEvent(QEvent.MouseButtonPress, pt, ed.viewport().mapToGlobal(pt), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+        QApplication.sendEvent(ed, QKeyEvent(QEvent.KeyPress, Qt.Key_Return, Qt.NoModifier))
+        assert ed._edit_link == link.blockNumber() and ed.textCursor().blockNumber() == link.blockNumber()
+        assert not ed._image_hide_selections()
+        QApplication.sendEvent(ed, QKeyEvent(QEvent.KeyPress, Qt.Key_Down, Qt.NoModifier))
+        assert ed._edit_link is None and ed.textCursor().blockNumber() != link.blockNumber()
+        ed.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -1231,7 +1264,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

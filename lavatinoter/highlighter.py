@@ -4,7 +4,7 @@ import re
 
 from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 
-from . import theme
+from . import theme, util
 from .spell import WORD, speller
 
 MAX_HIGHLIGHT_CHARS = 400_000         # above this a document is shown without colours (keeps opening and typing fast)
@@ -440,6 +440,9 @@ class Highlighter(QSyntaxHighlighter):
             return
         ok_colors = {self.fmts["comment"].foreground().color().name(), self.fmts["string"].foreground().color().name()}
         hidden = mark_spans(text) if self.lang.name in RICH_LANGS else []
+        low = text.lower()
+        if any(x in low for x in util.IMAGE_EXTS):          # the words of a picture's file path are not misspellings
+            hidden = hidden + [(s, e) for s, e, _ref in util.find_image_refs(text)]
         for m in WORD.finditer(text):
             if not speller.is_wrong(m.group()) or any(a <= m.start() < b for a, b in hidden):
                 continue
