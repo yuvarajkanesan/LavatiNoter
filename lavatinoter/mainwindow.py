@@ -694,6 +694,7 @@ class MainWindow(QMainWindow):
         ed.show_guides = self.settings["indent_guides"]
         ed.zoomRequested.connect(self.zoom)
         ed.filesDropped.connect(self.open_paths)
+        self.wire_editor(ed)
         ed.cursorStatus.connect(self._update_status)
         ed.document().modificationChanged.connect(lambda _=False, p=ed: self._modification_changed(p))
         ed.document().contentsChanged.connect(self._content_timer.start)
@@ -702,6 +703,26 @@ class MainWindow(QMainWindow):
         ed.definitionRequested.connect(lambda w: self.go_to_definition(w))
         ed.hover_provider = lambda line, col, e=ed: self._lsp_hover(e, line, col)
         return ed
+
+    def wire_editor(self, ed):
+        """What every editor needs from the window: plugin commands, Open File, internet search and status messages."""
+        ed.plugin_actions_provider = lambda: self._plugin_actions
+        ed.path_resolver = self._resolve_path_token
+        ed.openPathRequested.connect(lambda p: self.open_paths([p]))
+        ed.statusMessage.connect(self.flash)
+        ed.search_url = self.settings["search_url"]
+
+    def _resolve_path_token(self, token):
+        """An existing file or folder named by `token`: as typed, next to the current document, or in the workspace folder."""
+        page = self.current()
+        bases = [os.path.dirname(page.path)] if page is not None and page.path else []
+        if self.workspace.root:
+            bases.append(self.workspace.root)
+        cands = [token] if os.path.isabs(token) else [os.path.join(b, token) for b in bases]
+        for c in cands:
+            if os.path.exists(c):
+                return os.path.normpath(c)
+        return ""
 
     def _modification_changed(self, page):
         self._autosave.start()

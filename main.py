@@ -1327,6 +1327,98 @@ def selftest():
         for e2 in (left, right):
             e2.document().setModified(False)
 
+    def t_context_menu_features():
+        from PySide6.QtWidgets import QMenu
+        from lavatinoter.highlighter import JS, PYTHON, HTML, LUA
+        assert JS.block_comment == ("/*", "*/") and HTML.block_comment == ("<!--", "-->") and PYTHON.block_comment is None
+        ed = win.new_file("alpha beta alpha\ngamma alpha\nline3\nline4\n")
+        ed.set_language(JS)
+        ed.lang_auto = False
+        # style every occurrence of a token, one place, and clear
+        c = ed.textCursor()
+        c.setPosition(0)
+        c.setPosition(5, QTextCursor.KeepAnchor)
+        ed.setTextCursor(c)
+        ed.style_all(0)
+        assert len(ed._style_selections()) == 3, len(ed._style_selections())
+        c.setPosition(6)
+        c.setPosition(10, QTextCursor.KeepAnchor)
+        ed.setTextCursor(c)
+        ed.style_one(2)
+        assert len(ed._style_selections()) == 4
+        ed.clear_style(0)
+        assert len(ed._style_selections()) == 1
+        ed.clear_style()
+        assert not ed._style_selections()
+        # begin / end select, normal and column mode
+        c.setPosition(6)
+        ed.setTextCursor(c)
+        ed.begin_end_select()
+        c.setPosition(16)
+        ed.setTextCursor(c)
+        ed.begin_end_select()
+        assert ed.textCursor().selectedText() == "beta alpha"
+        ed.setTextCursor(QTextCursor(ed.document().findBlockByNumber(0)))
+        ed.begin_end_select(True)
+        c2 = QTextCursor(ed.document().findBlockByNumber(1))
+        c2.setPosition(c2.position() + 3)
+        ed.setTextCursor(c2)
+        ed.begin_end_select(True)
+        assert len(ed._all_cursors()) == 2
+        ed.clear_extra_cursors()
+        # case, block comments, line comments
+        ed.setPlainText("one two\nthree\n")
+        ed.setTextCursor(QTextCursor(ed.document().findBlockByNumber(0)))
+        ed.moveCursor(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+        ed.transform_selection(str.upper)
+        assert ed.toPlainText().startswith("ONE TWO")
+        ed.selectAll()
+        ed.block_comment(True)
+        assert ed.toPlainText().startswith("/*ONE TWO") and ed.toPlainText().rstrip().endswith("*/"), ed.toPlainText()
+        ed.block_comment(False)
+        assert ed.toPlainText() == "ONE TWO\nthree\n", repr(ed.toPlainText())
+        ed.selectAll()
+        ed.toggle_comment()
+        assert ed.toPlainText().startswith("// ONE TWO")
+        ed.toggle_comment()
+        assert ed.toPlainText() == "ONE TWO\nthree\n"
+        # hide lines and show them again
+        ed.setPlainText("a\nb\nc\nd\ne\n")
+        ed.recompute_folds()
+        c = QTextCursor(ed.document().findBlockByNumber(1))
+        c.setPosition(c.position() + 1)
+        c.setPosition(ed.document().findBlockByNumber(2).position() + 1, QTextCursor.KeepAnchor)
+        ed.setTextCursor(c)
+        ed.hide_lines()
+        vis = [ed.document().findBlockByNumber(i).isVisible() for i in range(5)]
+        assert vis == [True, False, False, True, True], vis
+        ed.show_hidden_lines()
+        assert all(ed.document().findBlockByNumber(i).isVisible() for i in range(5)) and not ed.user_hidden
+        ed.setTextCursor(QTextCursor(ed.document().firstBlock()))
+        ed.hide_lines()                                                       # the first line cannot be hidden
+        assert ed.document().firstBlock().isVisible() and not ed.user_hidden
+        # Open File: a file name in the text is found, relative to the document
+        p = os.path.join(work, "ctx_target.txt")
+        open(p, "w").write("x")
+        ed.setPlainText(f"see {os.path.basename(p)} for details")
+        ed.path = os.path.join(work, "ctx_doc.txt")
+        c = ed.textCursor()
+        c.setPosition(6)
+        ed.setTextCursor(c)
+        win._resolve_path_token = win._resolve_path_token                  # the window resolves against the document folder
+        assert ed.path_in_text() == os.path.normpath(p), ed.path_in_text()
+        # the menu itself builds with every entry the design asks for
+        from PySide6.QtCore import QPoint
+        menu = ed.build_context_menu(QPoint(20, 10))
+        shown = [[x.text() for x in menu.actions()] + [x.text() for sub in menu.findChildren(QMenu) for x in sub.actions()]]
+        flat = " | ".join(shown[0])
+        for need in ("Cut", "Copy", "Paste", "Delete", "Select All", "Begin/End Select", "Begin/End Select in Column Mode",
+                     "Style all occurrences of token", "Style one token", "Clear style", "Plugin commands", "UPPERCASE", "lowercase",
+                     "Open File", "Search on Internet", "Toggle Single Line Comment", "Block Comment", "Block Uncomment", "Hide Lines"):
+            assert need in flat, need
+        ed.path = None
+        ed.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -1336,7 +1428,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

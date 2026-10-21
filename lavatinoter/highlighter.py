@@ -33,6 +33,15 @@ class Lang:
         self._combined = None
         self._completions = None
 
+    @property
+    def block_comment(self):
+        """('/*', '*/') style delimiters when the language has a block comment made of plain characters, else None."""
+        for start, end, kind in self.multi:
+            if kind == "comment":
+                if not re.search(r"(?<!\\)[\^$.*+?()\[\]{}|]", start + end):      # only plain characters (an escaped one counts as plain)
+                    return re.sub(r"\\(.)", r"\1", start), re.sub(r"\\(.)", r"\1", end)
+        return None
+
     def completions(self):
         """Keywords and built-in names of this language, taken from its keyword rules (for the suggestion list)."""
         if self._completions is None:

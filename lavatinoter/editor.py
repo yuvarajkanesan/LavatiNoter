@@ -6,9 +6,9 @@ import re
 import time
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QStringListModel, Qt, QTimer, Signal
-from PySide6.QtGui import (QGuiApplication, QAction, QColor, QPen, QFont, QFontMetricsF, QImage, QPainter, QPixmap, QTextCharFormat, QTextCursor, QTextFormat,
+from PySide6.QtGui import (QIcon, QGuiApplication, QAction, QColor, QPen, QFont, QFontMetricsF, QImage, QPainter, QPixmap, QTextCharFormat, QTextCursor, QTextFormat,
                            QTextOption, QTextBlockUserData)
-from PySide6.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
+from PySide6.QtWidgets import QMenu, QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
 from . import folding, richtext
 from . import spell as spellmod
@@ -49,6 +49,8 @@ class CodeEditor(QPlainTextEdit):
     filesDropped = Signal(list)             # local files dropped or pasted: the window opens them
     imagePasted = Signal(str)               # path of the image file that was saved for a paste
     definitionRequested = Signal(str)       # Ctrl+click on a name: the window finds its definition
+    openPathRequested = Signal(str)         # 'Open File' in the right-click menu
+    statusMessage = Signal(str)             # short messages for the status bar
     imageActivated = Signal(str)            # a picture was double-clicked: the window shows it large
 
     is_large = False
@@ -68,6 +70,15 @@ class CodeEditor(QPlainTextEdit):
         self.marks = []                     # [(start, length)] highlighted by the Mark tab
         self._pix_cache = {}
         self.autocomplete_on = False
+        self.styles_all = {}               # {slot: token}: every occurrence of the token is coloured
+        self.styles_one = {}               # {slot: [QTextCursor]}: single places coloured by hand
+        self._style_cache = (None, "")
+        self._sel_mark = None              # where Begin/End Select started
+        self.user_hidden = []              # [(cursor at the first hidden line, cursor at the end of the last)]
+        self.plugin_actions_provider = None
+        self.path_resolver = None          # callable(text) -> existing path or ''
+        self.context_provider = None       # callable(menu, editor) -> True when it added items (the Compare window uses it)
+        self.search_url = "https://www.google.com/search?q={q}"
         self.line_tint = {}                # {line: QColor}: lines painted in a colour (the comparison window)
         self._edit_link = None             # block number of a picture link being edited by hand (Enter on a selected picture)
         self.copy_styled = True            # plain-text copy of formatted text uses bold / italic look-alike characters
@@ -317,6 +328,7 @@ class CodeEditor(QPlainTextEdit):
         sels += self._image_hide_selections()
         sels += self._extra_cursor_selections()
         sels += self._tint_selections()
+        sels += self._style_selections()
         sels += self._diag_selections()
         sels += self._mark_selections()
         sels += self._smart_selections()
@@ -519,30 +531,277 @@ class CodeEditor(QPlainTextEdit):
         self.highlighter.rehighlight()
         return True
 
+    # ---- the right-click menu -----------------------------------------------------------------------------------------------
+    STYLE_COLORS = ("#f2a65a", "#5aa9ff", "#8ad95c", "#c792ea", "#ee6a50")
+
+    def _word_or_selection(self, cur=None):
+        cur = cur or self.textCursor()
+        if cur.hasSelection():
+            return cur.selectedText().replace("\u2029", "\n")
+        c = QTextCursor(cur)
+        c.select(QTextCursor.WordUnderCursor)
+        return c.selectedText()
+
+    def _style_selections(self):
+        out = []
+        if not self.styles_all and not self.styles_one:
+            return out
+        doc = self.document()
+        rev = doc.revision()
+        if self._style_cache[0] != rev:
+            self._style_cache = (rev, self.toPlainText() if self.length() < 3_000_000 else "")
+        text = self._style_cache[1]
+        pm = PosMap(text) if text else None
+        for slot, token in self.styles_all.items():
+            col = QColor(self.STYLE_COLORS[slot])
+            col.setAlpha(120)
+            n, i = 0, text.find(token) if text else -1
+            while i >= 0 and n < 4000:
+                before = text[i - 1] if i else " "
+                after = text[i + len(token)] if i + len(token) < len(text) else " "
+                if not (token[:1].isalnum() or token[:1] == "_") or not (before.isalnum() or before == "_"):
+                    if not (token[-1:].isalnum() or token[-1:] == "_") or not (after.isalnum() or after == "_"):
+                        s = QTextEdit.ExtraSelection()
+                        s.format.setBackground(col)
+                        s.cursor = QTextCursor(doc)
+                        s.cursor.setPosition(pm.to_q(i))
+                        s.cursor.setPosition(pm.to_q(i + len(token)), QTextCursor.KeepAnchor)
+                        out.append(s)
+                        n += 1
+                i = text.find(token, i + len(token))
+        for slot, cursors in self.styles_one.items():
+            col = QColor(self.STYLE_COLORS[slot])
+            col.setAlpha(120)
+            for c in cursors:
+                if c.hasSelection():
+                    s = QTextEdit.ExtraSelection()
+                    s.format.setBackground(col)
+                    s.cursor = c
+                    out.append(s)
+        return out
+
+    def style_all(self, slot):
+        token = self._word_or_selection()
+        if token and "\n" not in token:
+            self.styles_all[slot] = token
+            self.refresh_selections()
+
+    def style_one(self, slot):
+        cur = self.textCursor()
+        if not cur.hasSelection():
+            cur.select(QTextCursor.WordUnderCursor)
+        if cur.hasSelection():
+            self.styles_one.setdefault(slot, []).append(QTextCursor(cur))
+            self.refresh_selections()
+
+    def clear_style(self, slot=None):
+        if slot is None:
+            self.styles_all, self.styles_one = {}, {}
+        else:
+            self.styles_all.pop(slot, None)
+            self.styles_one.pop(slot, None)
+        self.refresh_selections()
+
+    def begin_end_select(self, column=False):
+        """First use remembers the caret; the second selects everything between that place and the caret (a block of columns
+        in column mode)."""
+        cur = self.textCursor()
+        if self._sel_mark is None:
+            self._sel_mark = (cur.position(), cur.blockNumber(), cur.positionInBlock())
+            self.statusMessage.emit("Selection start set: move to the end and choose Begin/End Select again")
+            return
+        pos, line, col = self._sel_mark
+        self._sel_mark = None
+        if column:
+            self._column_select(line, col, cur.blockNumber(), cur.positionInBlock())
+        else:
+            c = QTextCursor(self.document())
+            c.setPosition(pos)
+            c.setPosition(cur.position(), QTextCursor.KeepAnchor)
+            self.setTextCursor(c)
+
+    def path_in_text(self):
+        """The file name under the caret / in the selection, resolved to an existing path (else '')."""
+        token = self.textCursor().selectedText().strip() if self.textCursor().hasSelection() else ""
+        if not token:
+            cur = self.textCursor()
+            text, col = cur.block().text(), cur.positionInBlock()
+            for m in re.finditer(r"[^\s\"'<>|*?(),;]+", text):
+                if m.start() <= col <= m.end():
+                    token = m.group()
+                    break
+        token = token.strip("\"'").rstrip(".:")
+        if not token or "\u2029" in token:
+            return ""
+        token = re.sub(r":\d+(:\d+)?$", "", token)                # file.py:12:3
+        if self.path_resolver is not None:
+            return self.path_resolver(token) or ""
+        base = os.path.dirname(self.path) if self.path else ""
+        full = token if os.path.isabs(token) else os.path.join(base, token)
+        return os.path.normpath(full) if os.path.exists(full) else ""
+
+    def search_internet(self):
+        text = self._word_or_selection().strip()
+        if text:
+            import urllib.parse
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl(self.search_url.replace("{q}", urllib.parse.quote(text))))
+
+    def block_comment(self, on):
+        """Wraps the selection in the language's block comment marks, or takes them off. Languages that only have line comments
+        get the comment mark on every selected line instead."""
+        pair = self.lang.block_comment
+        cur = self.textCursor()
+        if pair is None:
+            if self.lang.comment:
+                start, end = self._selected_blocks()
+                first = start
+                lines = []
+                b = first
+                while b.isValid() and b.blockNumber() <= end.blockNumber():
+                    lines.append(b.text())
+                    b = b.next()
+                commented = all(not t.strip() or t.lstrip().startswith(self.lang.comment) for t in lines)
+                if commented == (not on):
+                    self.toggle_comment()
+            return
+        s, e = pair
+        if not cur.hasSelection():
+            return
+        text = cur.selectedText().replace("\u2029", "\n")
+        a, b = cur.selectionStart(), cur.selectionEnd()
+        if on:
+            cur.insertText(s + text + e)
+            c = QTextCursor(self.document())
+            c.setPosition(a + len(s))
+            c.setPosition(a + len(s) + len(text), QTextCursor.KeepAnchor)
+            self.setTextCursor(c)
+        else:
+            t = text.strip()
+            if t.startswith(s) and t.endswith(e):
+                inner = t[len(s):len(t) - len(e)]
+                cur.insertText(inner)
+            else:                                                       # the marks may sit just outside the selection
+                doc = self.document()
+                c = QTextCursor(doc)
+                c.setPosition(max(0, a - len(s)))
+                c.setPosition(min(doc.characterCount() - 1, b + len(e)), QTextCursor.KeepAnchor)
+                t2 = c.selectedText()
+                if t2.startswith(s) and t2.endswith(e):
+                    c.insertText(text)
+
+    def hide_lines(self):
+        """Hides the selected lines (or the current one) behind a small ... marker you can click to bring them back."""
+        start, end = self._selected_blocks()
+        if not start.previous().isValid():
+            self.statusMessage.emit("The first line cannot be hidden: select lines below it")
+            return
+        c1, c2 = QTextCursor(start), QTextCursor(end)
+        c2.movePosition(QTextCursor.EndOfBlock)
+        self.user_hidden.append((c1, c2))
+        line = start.blockNumber() - 1
+        self.fold_regions[line] = max(self.fold_regions.get(line, 0), end.blockNumber())
+        self._bd(self.document().findBlockByNumber(line)).folded = True
+        self._has_flags = True
+        self._apply_folds()
+        self.setTextCursor(QTextCursor(self.document().findBlockByNumber(line)))
+        self.gutter.update()
+
+    def show_hidden_lines(self):
+        for c1, c2 in self.user_hidden:
+            blk = self.document().findBlockByNumber(c1.blockNumber() - 1)
+            if blk.isValid():
+                self._bd(blk).folded = False
+        self.user_hidden = []
+        self._apply_folds()
+        self.gutter.update()
+
     def contextMenuEvent(self, e):
-        menu = self.createStandardContextMenu()
-        cur = self.cursorForPosition(e.pos())
-        cur.select(QTextCursor.WordUnderCursor)
-        word = cur.selectedText()
-        if self.highlighter.spell_on and word and spellmod.speller.is_wrong(word) and not self.isReadOnly():
-            first = menu.actions()[0] if menu.actions() else None
+        self.build_context_menu(e.pos()).exec(e.globalPos())
+
+    def build_context_menu(self, pos):
+        click = self.cursorForPosition(pos)
+        cur = self.textCursor()
+        if not cur.hasSelection() or not (cur.selectionStart() <= click.position() <= cur.selectionEnd()):
+            self.setTextCursor(click)
+            cur = self.textCursor()
+        menu = QMenu(self)
+        ro = self.isReadOnly()
+        has_sel = cur.hasSelection()
+        word = self._word_or_selection()
+
+        def add(text, fn, enabled=True, shortcut=None):
+            a = menu.addAction(text, fn)
+            a.setEnabled(enabled)
+            if shortcut:
+                a.setShortcut(shortcut)
+            return a
+        # mistakes first
+        if self.highlighter.spell_on and word and not has_sel and spellmod.speller.is_wrong(word) and not ro:
             sugg = spellmod.speller.suggestions(word)
+            wc = QTextCursor(click)
+            wc.select(QTextCursor.WordUnderCursor)
             for s in sugg:
-                a = QAction(s, menu)
-                a.triggered.connect(lambda _=False, s=s, c=QTextCursor(cur): c.insertText(s))
-                menu.insertAction(first, a)
+                add(s, lambda _=False, s=s, c=QTextCursor(wc): c.insertText(s))
             if not sugg:
-                na = QAction("(no suggestions)", menu)
-                na.setEnabled(False)
-                menu.insertAction(first, na)
-            add = QAction(f'Add "{word}" to dictionary', menu)
-            add.triggered.connect(lambda: (spellmod.speller.add_word(word), self.highlighter.rehighlight()))
-            ign = QAction("Ignore all", menu)
-            ign.triggered.connect(lambda: (spellmod.speller.ignore(word), self.highlighter.rehighlight()))
-            menu.insertAction(first, add)
-            menu.insertAction(first, ign)
-            menu.insertSeparator(first)
-        menu.exec(e.globalPos())
+                add("(no suggestions)", None, False)
+            add(f'Add "{word}" to dictionary', lambda: (spellmod.speller.add_word(word), self.highlighter.rehighlight()))
+            add("Ignore all", lambda: (spellmod.speller.ignore(word), self.highlighter.rehighlight()))
+            menu.addSeparator()
+        if self.context_provider is not None:                         # extra commands from the window the editor lives in
+            try:
+                if self.context_provider(menu, self):
+                    menu.addSeparator()
+            except Exception:  # noqa: BLE001
+                pass
+        add("Cut", self.cut, has_sel and not ro, "Ctrl+X")
+        add("Copy", self.copy, has_sel, "Ctrl+C")
+        add("Paste", self.paste, not ro, "Ctrl+V")
+        add("Delete", lambda: self.textCursor().removeSelectedText(), has_sel and not ro)
+        add("Select All", self.selectAll, True, "Ctrl+A")
+        add("Begin/End Select" + (" (start is set)" if self._sel_mark else ""), lambda: self.begin_end_select(False))
+        add("Begin/End Select in Column Mode", lambda: self.begin_end_select(True))
+        menu.addSeparator()
+        for title, fn in (("Style all occurrences of token", self.style_all), ("Style one token", self.style_one)):
+            sub = menu.addMenu(title)
+            sub.setEnabled(bool(word))
+            for slot, col in enumerate(self.STYLE_COLORS):
+                a = sub.addAction(f"Using style {slot + 1}", lambda _=False, f=fn, s=slot: f(s))
+                pm = QPixmap(14, 14)
+                pm.fill(QColor(col))
+                a.setIcon(QIcon(pm))
+        clear = menu.addMenu("Clear style")
+        clear.setEnabled(bool(self.styles_all or self.styles_one))
+        for slot, col in enumerate(self.STYLE_COLORS):
+            a = clear.addAction(f"Clear style {slot + 1}", lambda _=False, s=slot: self.clear_style(s))
+            a.setEnabled(slot in self.styles_all or slot in self.styles_one)
+        clear.addSeparator()
+        clear.addAction("Clear all styles", lambda: self.clear_style())
+        menu.addSeparator()
+        plug = menu.addMenu("Plugin commands")
+        actions = self.plugin_actions_provider() if self.plugin_actions_provider else []
+        for a in actions:
+            plug.addAction(a)
+        plug.setEnabled(bool(actions) and not ro)
+        menu.addSeparator()
+        add("UPPERCASE", lambda: self.transform_selection(str.upper), has_sel and not ro)
+        add("lowercase", lambda: self.transform_selection(str.lower), has_sel and not ro)
+        menu.addSeparator()
+        target = self.path_in_text()
+        add("Open File", lambda: self.openPathRequested.emit(target), bool(target))
+        add("Search on Internet", self.search_internet, bool(word))
+        menu.addSeparator()
+        can_line = bool(self.lang.comment) and not ro
+        add("Toggle Single Line Comment", self.toggle_comment, can_line)
+        can_block = (self.lang.block_comment is not None or bool(self.lang.comment)) and not ro
+        add("Block Comment", lambda: self.block_comment(True), can_block)
+        add("Block Uncomment", lambda: self.block_comment(False), can_block)
+        menu.addSeparator()
+        add("Hide Lines", self.hide_lines, not self.read_only_window)
+        if self.user_hidden:
+            add("Show Hidden Lines", self.show_hidden_lines)
+        return menu
 
     def keyPressEvent(self, e):
         if self.macro_rec is not None and not self.macro_playing and e.key() not in (Qt.Key_Shift, Qt.Key_Control, Qt.Key_Alt, Qt.Key_Meta):
@@ -1473,6 +1732,10 @@ class CodeEditor(QPlainTextEdit):
             self.fold_regions = {}
         else:
             self.fold_regions = folding.compute_regions(self.lang.name, self.toPlainText())
+            for c1, c2 in self.user_hidden:                     # lines hidden by hand stay hidden (and openable) as the text changes
+                line = c1.blockNumber() - 1
+                if line >= 0:
+                    self.fold_regions[line] = max(self.fold_regions.get(line, 0), c2.blockNumber())
         self._apply_folds()
         self.gutter.update()
 
