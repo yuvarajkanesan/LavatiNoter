@@ -981,12 +981,44 @@ class CodeEditor(QPlainTextEdit):
             cur.select(QTextCursor.WordUnderCursor)
         text = cur.selectedText().replace(" ", "\n")
         start = cur.selectionStart()
-        new = fn(text)
+        masked, table = self._mask_marks(text) if self.format_supported() else (text, [])
+        new = fn(masked)
+        if table:                                           # a change (UPPERCASE, a plugin, ...) must never touch the formatting marks
+            restored = self._unmask_marks(new, table)
+            new = restored if restored is not None else fn(text)
         cur.insertText(new)
         c = QTextCursor(self.document())
         c.setPosition(start)
         c.setPosition(start + len(new), QTextCursor.KeepAnchor)
         self.setTextCursor(c)
+
+    def _mask_marks(self, text):
+        """The text with every formatting mark (**, _, <u>, <span style=...>, <p style=...>) swapped for one private character, so a
+        text change cannot alter them. -> (masked text, [the marks])."""
+        table, lines = [], []
+        for line in text.replace(chr(0x2029), "\n").split("\n"):
+            spans = mark_spans(line)
+            if not spans or len(table) + len(spans) > 6000:
+                lines.append(line)
+                continue
+            out, pos = [], 0
+            for a, b in spans:
+                if a < pos:
+                    continue
+                out.append(line[pos:a])
+                out.append(chr(0xE000 + len(table)))
+                table.append(line[a:b])
+                pos = b
+            out.append(line[pos:])
+            lines.append("".join(out))
+        return "\n".join(lines), table
+
+    @staticmethod
+    def _unmask_marks(text, table):
+        used = [ord(ch) - 0xE000 for ch in text if 0xE000 <= ord(ch) < 0xE000 + len(table)]
+        if sorted(used) != list(range(len(table))):         # the change dropped or copied a mark: give up rather than break the text
+            return None
+        return "".join(table[ord(ch) - 0xE000] if 0xE000 <= ord(ch) < 0xE000 + len(table) else ch for ch in text)
 
     def transform_all_or_selection(self, fn):
         cur = self.textCursor()
