@@ -584,7 +584,6 @@ class MainWindow(QMainWindow):
     def _build_para_toolbar(self):
         """The Paragraph group of a word processor: lists, indents, sort, alignment, line spacing, shading and borders."""
         self._para_buttons = []
-        self.addToolBarBreak()
         tb = self.addToolBar("Paragraph")
         tb.setObjectName("para-toolbar")
         tb.setMovable(False)
