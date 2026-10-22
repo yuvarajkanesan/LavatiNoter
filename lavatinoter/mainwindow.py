@@ -8,7 +8,7 @@ from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, QSize, Qt,
 from PySide6.QtGui import (QIcon, QPixmap, QColor, QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence,
                            QTextCursor)
 from PySide6.QtWidgets import (QSplitter, QApplication, QCheckBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QFormLayout,
-                               QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
+                               QColorDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
                                QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget, QComboBox, QLineEdit)
 
 from . import detect, export, filetypes, lsp, runner, updates
@@ -20,6 +20,7 @@ from .largefile import GoToPanel, LargeFileView
 from . import search
 from .palette import Picker, fuzzy
 from .minitoolbar import HIGHLIGHTS
+from .popups import HighlightPopup, LineSpacingPopup, PopupButton, TablePopup
 from .panels import FunctionsPanel, ImagePreview, ImagesPanel, MinimapWidget, ResultsPanel, WorkspacePanel, reveal_in_explorer
 
 MB = 1024 * 1024
@@ -618,26 +619,56 @@ class MainWindow(QMainWindow):
             b = self._para_button(icon, f"Align {name}", call("set_alignment", name), checkable=True)
             self.align_buttons[name] = b
             aw(b)
-        lm = QMenu(self)
-        for f in (1.0, 1.15, 1.5, 2.0, 2.5, 3.0):
-            lm.addAction(f"{f:g}", call("set_line_spacing", f))
-        aw(self._para_button("linespacing", "Line spacing", menu=lm))
-        shm = QMenu(self)
-        for name, col in HIGHLIGHTS:
-            pm = QPixmap(14, 14)
-            pm.fill(QColor(col))
-            shm.addAction(QIcon(pm), name, call("set_shading", col))
-        shm.addSeparator()
-        shm.addAction("No shading", call("set_shading", None))
-        aw(self._para_button("shading", "Shading: colour behind the whole line", call("set_shading", HIGHLIGHTS[0][1]), shm))
-        bom = QMenu(self)
-        bom.addAction("Box", call("set_border", "1px solid #8a93a6"))
-        bom.addAction("Thick box", call("set_border", "2px solid #8a93a6"))
-        bom.addAction("Blue box", call("set_border", "1px solid #2f6fe8"))
-        bom.addSeparator()
-        bom.addAction("No border", call("set_border", None))
-        aw(self._para_button("borders", "Border around the lines", menu=bom))
+        self._popup_buttons = []
+        for icon, tip, make in (("linespacing", "Line spacing", self._make_spacing_popup),
+                                ("shading", "Highlight color", self._make_highlight_popup),
+                                ("borders", "Insert table", self._make_table_popup)):
+            b = PopupButton(icon, tip, make)
+            self._popup_buttons.append(b)
+            aw(b)
         self.para_toolbar = tb
+
+    def _make_spacing_popup(self):
+        ed = self.editor_of(self.current())
+        state = ed.paragraph_state() if ed is not None and not self.current().is_large else {}
+        try:
+            current = float(state.get("line-height", "1.0"))
+        except ValueError:
+            current = 1.0
+        d = LineSpacingPopup(current, self)
+        d.chosen.connect(lambda v: self._para_call("set_line_spacing", v))
+        d.spaceBefore.connect(lambda: self._para_call("add_space_before"))
+        d.options.connect(self._line_spacing_options)
+        return d
+
+    def _line_spacing_options(self):
+        v, ok = QInputDialog.getDouble(self, "Line spacing options", "Line spacing (1.0 = single):", 1.15, 1.0, 6.0, 2)
+        if ok:
+            self._para_call("set_line_spacing", v)
+
+    def _make_highlight_popup(self):
+        d = HighlightPopup("", self)
+        d.chosen.connect(lambda c: self._para_call("set_highlight", c or None))
+
+        def more():
+            col = QColorDialog.getColor(QColor("#ffe566"), self, "Highlight color")
+            if col.isValid():
+                self._para_call("set_highlight", col.name())
+        d.more.connect(more)
+        return d
+
+    def _make_table_popup(self):
+        d = TablePopup(self)
+        d.chosen.connect(lambda c, r: self._para_call("insert_table", c, r))
+
+        def custom():
+            c, ok = QInputDialog.getInt(self, "Custom table", "Columns:", 4, 1, 30)
+            if ok:
+                r, ok = QInputDialog.getInt(self, "Custom table", "Rows (without the header):", 3, 1, 500)
+                if ok:
+                    self._para_call("insert_table", c, r)
+        d.custom.connect(custom)
+        return d
 
     def _para_call(self, name, *args):
         ed = self.editor_of(self.current())
@@ -716,6 +747,8 @@ class MainWindow(QMainWindow):
         for a, icon in self._icon_actions:
             a.setIcon(theme.icon(icon, k("MUTED")))
         self.plus.setIcon(theme.icon("plus", k("MUTED"), 18))
+        for b in getattr(self, "_popup_buttons", []):
+            b.restyle()
         for b, icon, dd in getattr(self, "_para_buttons", []):
             b.setIcon(theme.icon(icon, k("MUTED"), 24, dropdown=dd))
         self.results.close_btn.setIcon(theme.icon("close", k("MUTED"), 16))

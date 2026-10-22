@@ -1672,6 +1672,42 @@ def selftest():
         ed.transform_selection(lambda s: s.replace("\n", ""))          # a change that throws marks away falls back to the plain change
         ed.document().setModified(False)
 
+    def t_toolbar_popups():
+        from lavatinoter import popups
+        ed = win.new_file("alpha beta\nsecond")
+        ed.lang_auto = False
+        ed.moveCursor(QTextCursor.Start)
+        d = win._make_spacing_popup()
+        d.chosen.emit(1.5)
+        assert ed.toPlainText().startswith('<p style="line-height:1.5">alpha beta</p>'), ed.toPlainText()
+        d2 = win._make_spacing_popup()
+        assert any(r.checked and r.text == "Relaxed" for r in d2.findChildren(popups.Row)), "the current spacing is ticked"
+        d2.chosen.emit(1.0)
+        assert ed.toPlainText().startswith("alpha beta")
+        c = ed.textCursor()
+        c.setPosition(0)
+        c.setPosition(5, QTextCursor.KeepAnchor)
+        ed.setTextCursor(c)
+        win._make_highlight_popup().chosen.emit("#ffe566")
+        assert ed.toPlainText().startswith('<span style="background:#ffe566">alpha</span>'), ed.toPlainText()
+        c = ed.textCursor()
+        i = ed.toPlainText().index("alpha")
+        c.setPosition(i)
+        c.setPosition(i + 5, QTextCursor.KeepAnchor)
+        ed.setTextCursor(c)
+        win._make_highlight_popup().chosen.emit("")
+        assert ed.toPlainText().startswith("alpha beta"), ed.toPlainText()
+        ed.moveCursor(QTextCursor.End)
+        win._make_table_popup().chosen.emit(3, 2)
+        t = ed.toPlainText()
+        assert "| Column 1 | Column 2 | Column 3 |" in t and "| --- | --- | --- |" in t and t.count("|  |  |  |") == 2, t
+        ed.moveCursor(QTextCursor.Start)
+        ed.add_space_before()
+        assert ed.toPlainText().startswith("\nalpha beta"), repr(ed.toPlainText()[:12])
+        g = popups.TableGrid()
+        assert (g.cols, g.rows) == (4, 3)
+        ed.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -1681,7 +1717,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("Word-style mini toolbar", t_word_style_toolbar), ("Paragraph group (align, spacing, shading, lists, sort)", t_paragraph_group), ("Compare dialogs (merge setup, folders, large files, sessions)", t_compare_dialogs), ("selected picture hides its path", t_selected_picture_path), ("formatting marks survive text changes", t_marks_survive_transforms), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("Word-style mini toolbar", t_word_style_toolbar), ("Paragraph group (align, spacing, shading, lists, sort)", t_paragraph_group), ("Compare dialogs (merge setup, folders, large files, sessions)", t_compare_dialogs), ("selected picture hides its path", t_selected_picture_path), ("formatting marks survive text changes", t_marks_survive_transforms), ("toolbar popups (line spacing, highlight, table)", t_toolbar_popups), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

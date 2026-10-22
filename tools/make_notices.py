@@ -21,7 +21,7 @@ Qt and PySide6 are used under the LGPL v3. They are shipped as separate dynamic 
 folder (the PySide6 and shiboken6 folders inside _internal), so you can replace them with your own build of the
 same version. Source code and build instructions: https://code.qt.io and https://wiki.qt.io/Qt_for_Python
 
-Fonts: IBM Plex Sans (c) IBM Corp., and JetBrains Mono (c) The JetBrains Mono Project Authors, are licensed under
+Fonts: Manrope (c) The Manrope Project Authors, IBM Plex Sans (c) IBM Corp., and JetBrains Mono (c) The JetBrains Mono Project Authors, are licensed under
 the SIL Open Font License 1.1 (https://openfontlicense.org).
 """
 
@@ -69,7 +69,7 @@ def main():
     parts.append(f"\n{'=' * 78}\nGNU General Public License v3 (incorporated by the LGPL above)\n{'=' * 78}\n" +
                  bundled("GPL-3.0.txt") + "\n")
     ofl = bundled("OFL-1.1.txt")
-    parts.append(f"\n{'=' * 78}\nFonts: IBM Plex Sans and JetBrains Mono - SIL Open Font License 1.1\n{'=' * 78}\n"
+    parts.append(f"\n{'=' * 78}\nFonts: Manrope, IBM Plex Sans and JetBrains Mono - SIL Open Font License 1.1\n{'=' * 78}\n"
                  'Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)\n\n' +
                  ofl.replace("Reserved Font Name \"Plex\"", "Reserved Font Name \"Plex\"") + "\n")
     py = os.path.join(sys.base_prefix, "LICENSE.txt")

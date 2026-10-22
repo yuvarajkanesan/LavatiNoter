@@ -1552,6 +1552,43 @@ class CodeEditor(QPlainTextEdit):
         self._para_timer.start()
         return True
 
+    def add_space_before(self):
+        """Puts an empty line before every selected paragraph that does not already have one."""
+        if self.isReadOnly():
+            return False
+        start, end = self._selected_blocks()
+        cur = self.textCursor()
+        cur.beginEditBlock()
+        blocks = []
+        b = start
+        while b.isValid() and b.blockNumber() <= end.blockNumber():
+            if b.text().strip() and (not b.previous().isValid() or b.previous().text().strip()):
+                blocks.append(b.position())
+            b = b.next()
+        for pos in reversed(blocks):
+            c = QTextCursor(self.document())
+            c.setPosition(pos)
+            c.insertText("\n")
+        cur.endEditBlock()
+        return True
+
+    def insert_table(self, cols, rows):
+        """Inserts a table with a header row and `rows` empty rows: Markdown (or plain text) pipes, HTML tags in an HTML document."""
+        if self.isReadOnly():
+            return False
+        names = [f"Column {i + 1}" for i in range(cols)]
+        if self.lang.name == "HTML / XML":
+            body = "".join("  <tr>" + "<td></td>" * cols + "</tr>\n" for _ in range(rows))
+            text = "<table>\n  <tr>" + "".join(f"<th>{n}</th>" for n in names) + "</tr>\n" + body + "</table>\n"
+        else:
+            text = "| " + " | ".join(names) + " |\n| " + " | ".join("---" for _ in names) + " |\n" + ("|" + "  |" * cols + "\n") * rows
+        cur = self.textCursor()
+        if cur.positionInBlock() > 0:
+            text = "\n" + text
+        cur.insertText(text)
+        self.setTextCursor(cur)
+        return True
+
     def set_alignment(self, align):
         return self.set_paragraph("text-align", None if align == "left" else align)
 

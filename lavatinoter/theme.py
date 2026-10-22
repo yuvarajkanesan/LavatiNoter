@@ -108,7 +108,7 @@ def load_fonts():
                 except OSError:
                     pass
     have = set(QFontDatabase.families())
-    _families["ui"] = next((f for f in ("IBM Plex Sans", "Segoe UI", "Arial") if f in have), "Sans Serif")
+    _families["ui"] = next((f for f in ("Manrope", "IBM Plex Sans", "Segoe UI", "Arial") if f in have), "Sans Serif")
     _families["mono"] = next((f for f in ("JetBrains Mono", "Cascadia Mono", "Consolas", "Courier New") if f in have),
                              "Monospace")
 
