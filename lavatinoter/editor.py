@@ -2816,6 +2816,7 @@ class CodeEditor(QPlainTextEdit):
         self._paint_indent_guides()
         self._paint_fold_pills()
         self._paint_borders()
+        self._cover_selected_marks()
         self._paint_extra_carets()
         previews = self._visible_previews()
         self._preview_rects = []
@@ -2839,6 +2840,37 @@ class CodeEditor(QPlainTextEdit):
             p.setBrush(Qt.NoBrush)
             p.drawRect(x - 1, y + 1, w + 1, h + 1)
             self._preview_rects.append((QRect(x, y + 2, w, h), block))
+        p.end()
+
+    def _cover_selected_marks(self):
+        """Selected text is painted in the selection's text colour, which would show the hidden <p style=...> and </p> marks
+        (large ones when a line is aligned or spaced out): paint the selection colour over them."""
+        cur = self.textCursor()
+        if not self._has_para or not cur.hasSelection():
+            return
+        sel_a, sel_b = cur.selectionStart(), cur.selectionEnd()
+        p = QPainter(self.viewport())
+        col = QColor(theme.c("SEL_BG"))
+        block = self.firstVisibleBlock()
+        bottom = self.viewport().height()
+        while block.isValid():
+            top = self.blockBoundingGeometry(block).translated(self.contentOffset()).top()
+            if top > bottom:
+                break
+            text = block.text()
+            if text.startswith('<p style="') and text.endswith("</p>") and block.position() <= sel_b and block.position() + len(text) >= sel_a:
+                start = block.position()
+                for a, b in ((0, text.index(">") + 1), (len(text) - 4, len(text))):
+                    if start + b <= sel_a or start + a >= sel_b:
+                        continue
+                    c1 = QTextCursor(self.document())
+                    c1.setPosition(start + max(a, sel_a - start))
+                    c2 = QTextCursor(self.document())
+                    c2.setPosition(start + min(b, sel_b - start))
+                    r1, r2 = self.cursorRect(c1), self.cursorRect(c2)
+                    if r1.top() == r2.top():
+                        p.fillRect(QRect(r1.left(), r1.top(), r2.left() - r1.left() + 1, max(r1.height(), r2.height())), col)
+            block = block.next()
         p.end()
 
     def _cover_selected_path(self, p, block, s, e, sel_a, sel_b):
