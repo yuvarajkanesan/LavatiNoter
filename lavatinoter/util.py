@@ -105,7 +105,7 @@ def rss_mb():
 
 # ---- settings -----------------------------------------------------------------------------------
 DEFAULTS = {
-    "theme": "Dark",
+    "theme": "Lavender",
     "font_size": 11,
     "tab_width": 4,
     "use_spaces": True,

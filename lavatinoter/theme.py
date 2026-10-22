@@ -63,17 +63,23 @@ _CONTRAST = _variant(
     SMART_BG="#4d4400", MARK_BG="#8a5a00", MARK_FG="#ffffff", SYN_KEYWORD="#ffb347", SYN_STRING="#7dff9b", SYN_NUMBER="#6cb6ff",
     SYN_COMMENT="#b0b0b0", SYN_FUNC="#ffe45c", SYN_DECOR="#d8b4ff", SYN_BUILTIN="#8be9fd", SYN_TYPE="#ffe45c", SYN_TAG="#ffb347",
     SYN_ATTR="#ffe45c", SYN_KEY="#8be9fd", SYN_LITERAL="#d8b4ff", SYN_OP="#ffffff")
-PALETTES = {"Dark": _DARK, "Light": _LIGHT, "Monokai": _MONOKAI, "Solarized Dark": _SOLAR_DARK, "Solarized Light": _SOLAR_LIGHT,
+_LAVENDER = _variant(
+    _LIGHT, BG="#f2f0fa", PANEL="#ffffff", EDITOR="#ffffff", PANEL2="#ebe8f7", FIELD="#ffffff", BORDER="#e1ddf0", BORDER2="#cdc8e4",
+    TEXT="#1e1b33", MUTED="#5f5b7d", FAINT="#a39fc0", ACCENT="#5b45e6", ACCENT_HOVER="#4a36cf", ON_ACCENT="#ffffff", ACCENT_BG="#e7e3fb",
+    HOVER="#ece9f9", SELECTED="#dcd7f6", LINE_HL="#e9e6fa", SEL_BG="#c9d9f7", SMART_BG="#d9ecd0", GUTTER="#f8f7fd",
+    SYN_KEYWORD="#7b3fc4", SYN_DECOR="#5b45e6")
+PALETTES = {"Lavender": _LAVENDER, "Dark": _DARK, "Light": _LIGHT, "Monokai": _MONOKAI, "Solarized Dark": _SOLAR_DARK, "Solarized Light": _SOLAR_LIGHT,
             "High Contrast": _CONTRAST}
 THEME_CHOICES = list(PALETTES)
-THEME_NAME = "Dark"
+THEME_NAME = "Lavender"
 
 LOGO_PURPLE_1, LOGO_PURPLE_2, LOGO_DARK, LOGO_ORANGE = "#6D28D9", "#4C1D95", "#2A1160", "#FF7A59"
 
 
 def c(key):
-    """The colour called `key` in the active palette."""
-    return PALETTES[THEME_NAME][key]
+    """The colour called `key` in the active palette (GUTTER falls back to the editor colour)."""
+    k = PALETTES[THEME_NAME]
+    return k[key] if key in k else k["EDITOR"]
 
 
 def is_dark():
@@ -775,22 +781,22 @@ QMenu::item {{ padding: 6px 28px 6px 14px; border-radius: 4px; }}
 QMenu::item:selected {{ background: {k['SELECTED']}; }}
 QMenu::item:disabled {{ color: {k['FAINT']}; }}
 QMenu::separator {{ height: 1px; background: {k['BORDER']}; margin: 4px 6px; }}
-QToolBar {{ background: {k['BG']}; border: none; border-bottom: 1px solid {k['BORDER']}; padding: 4px 8px; spacing: 2px; }}
+QToolBar {{ background: {k['PANEL']}; border: 1px solid {k['BORDER']}; border-radius: 12px; margin: 6px 12px 4px 12px; padding: 3px 8px; spacing: 2px; }}
 QToolBar::separator {{ width: 1px; background: {k['BORDER']}; margin: 4px 7px; }}
 QToolButton {{ background: transparent; border: none; border-radius: 6px; padding: 6px; }}
 QToolButton:hover {{ background: {k['HOVER']}; }}
 QToolButton:pressed, QToolButton:checked {{ background: {k['SELECTED']}; }}
 QToolButton:disabled {{ opacity: 0.4; }}
-QStatusBar {{ background: {k['BG']}; color: {k['MUTED']}; border-top: 1px solid {k['BORDER']}; }}
+QStatusBar {{ background: {k['BG']}; color: {k['MUTED']}; border: none; padding: 0 8px 4px 8px; }}
 QStatusBar::item {{ border: none; }}
 QStatusBar QLabel {{ padding: 3px 12px; color: {k['MUTED']}; }}
-QStatusBar QLabel[sep="true"] {{ border-left: 1px solid {k['BORDER']}; }}
-QTabWidget::pane {{ border: none; border-top: 1px solid {k['BORDER']}; background: {k['EDITOR']}; }}
+QStatusBar QLabel[sep="true"] {{ background: {k['PANEL']}; border: 1px solid {k['BORDER']}; border-radius: 11px; padding: 2px 12px; margin: 2px 0 0 6px; }}
+QTabWidget::pane {{ border: 1px solid {k['BORDER']}; border-radius: 10px; background: {k['EDITOR']}; margin: 0 12px 0 12px; top: -1px; }}
 QTabBar {{ background: {k['BG']}; qproperty-drawBase: 0; }}
 QTabBar::tab {{ background: transparent; color: {k['MUTED']}; padding: 9px 12px 9px 12px; border-top: 2px solid transparent;
-    border-right: 1px solid {k['BORDER']}; min-width: 60px; }}
+    border-top-left-radius: 10px; border-top-right-radius: 10px; margin-left: 4px; min-width: 60px; }}
 QTabBar::tab:hover {{ background: {k['HOVER']}; color: {k['TEXT']}; }}
-QTabBar::tab:selected {{ background: {k['PANEL']}; color: {k['TEXT']}; border-top: 2px solid {k['ACCENT']}; }}
+QTabBar::tab:selected {{ background: {k['EDITOR']}; color: {k['TEXT']}; border-top: 2px solid {k['ACCENT']}; border-left: 1px solid {k['BORDER']}; border-right: 1px solid {k['BORDER']}; }}
 QTabBar QToolButton {{ background: {k['BG']}; border: none; }}
 QPlainTextEdit, QTextEdit {{ background: {k['EDITOR']}; color: {k['TEXT']}; border: none; selection-background-color: {k['SEL_BG']};
     selection-color: {k['TEXT']}; }}

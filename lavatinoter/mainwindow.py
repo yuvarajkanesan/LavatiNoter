@@ -584,10 +584,15 @@ class MainWindow(QMainWindow):
     def _build_para_toolbar(self):
         """The Paragraph group of a word processor: lists, indents, sort, alignment, line spacing, shading and borders."""
         self._para_buttons = []
-        tb = self.addToolBar("Paragraph")
-        tb.setObjectName("para-toolbar")
-        tb.setMovable(False)
-        tb.setIconSize(QSize(24, 24))
+        tb = self.toolbar                                      # one row: what does not fit moves into the toolbar's "..." menu
+        self._para_actions = [tb.addSeparator()]
+
+        def aw(widget):
+            self._para_actions.append(tb.addWidget(widget))
+
+        def sep():
+            self._para_actions.append(tb.addSeparator())
+
         call = lambda name, *a: (lambda: self._para_call(name, *a))
         # bullets and numbering: the button applies the last style, the arrow lists the styles
         bm = QMenu(self)
@@ -596,27 +601,27 @@ class MainWindow(QMainWindow):
         nm = QMenu(self)
         for st, label in (("1.", "1.  2.  3."), ("1)", "1)  2)  3)"), ("a.", "a.  b.  c."), ("A.", "A.  B.  C."), ("i.", "i.  ii.  iii."), ("I.", "I.  II.  III.")):
             nm.addAction(label, call("toggle_list", True, st))
-        tb.addWidget(self._para_button("bullets", "Bullets", call("toggle_list", False), bm))
-        tb.addWidget(self._para_button("numbering", "Numbering", call("toggle_list", True), nm))
-        tb.addWidget(self._para_button("multilevel", "Multilevel list: the indent of each line sets its level", call("multilevel_list")))
-        tb.addSeparator()
-        tb.addWidget(self._para_button("indentdec", "Decrease indent", call("change_indent", -1)))
-        tb.addWidget(self._para_button("indentinc", "Increase indent", call("change_indent", 1)))
-        tb.addSeparator()
+        aw(self._para_button("bullets", "Bullets", call("toggle_list", False), bm))
+        aw(self._para_button("numbering", "Numbering", call("toggle_list", True), nm))
+        aw(self._para_button("multilevel", "Multilevel list: the indent of each line sets its level", call("multilevel_list")))
+        sep()
+        aw(self._para_button("indentdec", "Decrease indent", call("change_indent", -1)))
+        aw(self._para_button("indentinc", "Increase indent", call("change_indent", 1)))
+        sep()
         sm = QMenu(self)
         sm.addAction("Sort A to Z", call("sort_lines", False))
         sm.addAction("Sort Z to A", call("sort_lines", True))
-        tb.addWidget(self._para_button("sort", "Sort the selected lines (A to Z)", call("sort_lines", False), sm))
-        tb.addSeparator()
+        aw(self._para_button("sort", "Sort the selected lines (A to Z)", call("sort_lines", False), sm))
+        sep()
         self.align_buttons = {}
         for name, icon in (("left", "alignleft"), ("center", "aligncenter"), ("right", "alignright"), ("justify", "alignjustify")):
             b = self._para_button(icon, f"Align {name}", call("set_alignment", name), checkable=True)
             self.align_buttons[name] = b
-            tb.addWidget(b)
+            aw(b)
         lm = QMenu(self)
         for f in (1.0, 1.15, 1.5, 2.0, 2.5, 3.0):
             lm.addAction(f"{f:g}", call("set_line_spacing", f))
-        tb.addWidget(self._para_button("linespacing", "Line spacing", menu=lm))
+        aw(self._para_button("linespacing", "Line spacing", menu=lm))
         shm = QMenu(self)
         for name, col in HIGHLIGHTS:
             pm = QPixmap(14, 14)
@@ -624,14 +629,14 @@ class MainWindow(QMainWindow):
             shm.addAction(QIcon(pm), name, call("set_shading", col))
         shm.addSeparator()
         shm.addAction("No shading", call("set_shading", None))
-        tb.addWidget(self._para_button("shading", "Shading: colour behind the whole line", call("set_shading", HIGHLIGHTS[0][1]), shm))
+        aw(self._para_button("shading", "Shading: colour behind the whole line", call("set_shading", HIGHLIGHTS[0][1]), shm))
         bom = QMenu(self)
         bom.addAction("Box", call("set_border", "1px solid #8a93a6"))
         bom.addAction("Thick box", call("set_border", "2px solid #8a93a6"))
         bom.addAction("Blue box", call("set_border", "1px solid #2f6fe8"))
         bom.addSeparator()
         bom.addAction("No border", call("set_border", None))
-        tb.addWidget(self._para_button("borders", "Border around the lines", menu=bom))
+        aw(self._para_button("borders", "Border around the lines", menu=bom))
         self.para_toolbar = tb
 
     def _para_call(self, name, *args):
@@ -653,7 +658,8 @@ class MainWindow(QMainWindow):
             b.setChecked(name == align)
 
     def toggle_para_toolbar(self, on=None):
-        self.para_toolbar.setVisible(self.a_view_para.isChecked())
+        for act in self._para_actions:
+            act.setVisible(self.a_view_para.isChecked())
 
     def _build_toolbar(self):
         tb = self.addToolBar("Main")

@@ -225,7 +225,7 @@ class CodeEditor(QPlainTextEdit):
 
     def paint_gutter(self, event):
         p = QPainter(self.gutter)
-        p.fillRect(event.rect(), QColor(theme.c("EDITOR")))
+        p.fillRect(event.rect(), QColor(theme.c("GUTTER")))
         block = self.firstVisibleBlock()
         number = block.blockNumber()
         top = round(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
@@ -241,6 +241,8 @@ class CodeEditor(QPlainTextEdit):
                 mark = self.git_marks.get(number + 1) if self.git_marks else None
                 if mark:
                     p.fillRect(0, top, 3, h if mark != 'deleted' else 3, QColor(theme.c({'added': 'ACCENT', 'modified': 'ORANGE', 'deleted': 'RED'}[mark])))
+                if number == cur and not self.read_only_window:
+                    p.fillRect(0, top, w, max(h, bottom - top), QColor(theme.c("LINE_HL")))
                 p.setPen(QColor(theme.c("TEXT") if number == cur else theme.c("FAINT")))
                 p.drawText(0, top, w - 12 - self.FOLD_W, h, Qt.AlignRight | Qt.AlignVCenter, self._fmt_num(number + 1 + self.line_base))
                 if number in self.fold_regions:
