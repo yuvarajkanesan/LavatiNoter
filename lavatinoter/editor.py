@@ -8,9 +8,11 @@ import time
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import (QIcon, QGuiApplication, QAction, QColor, QPen, QFont, QFontMetricsF, QImage, QPainter, QPalette, QPixmap, QTextCharFormat, QTextCursor, QTextFormat,
                            QTextOption, QTextBlockUserData)
-from PySide6.QtWidgets import QWidgetAction, QMenu, QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
+from PySide6.QtWidgets import (QApplication, QCompleter, QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QTextEdit, QToolButton, QToolTip, QVBoxLayout, QWidget,
+                               QWidgetAction)
 
 from . import folding, richtext
+from .ctxmenu import ContextMenu
 from . import spell as spellmod
 from . import theme, util
 from .finddialog_pos import PosMap
@@ -41,6 +43,38 @@ class LineNumberArea(QWidget):
 
     def mousePressEvent(self, e):
         self.ed.gutter_click(e)
+
+
+class _SwatchRow(QWidget):
+    """Colour swatches in a row inside a menu; a click runs fn(slot) and closes the menu."""
+
+    def __init__(self, title, colors, fn, enabled=True):
+        super().__init__()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 6, 12, 8)
+        outer.setSpacing(6)
+        label = QLabel(title.upper())
+        label.setStyleSheet(f"color: {theme.c('FAINT')}; font-size: 10px; font-weight: 600; letter-spacing: 1px; background: transparent;")
+        outer.addWidget(label)
+        lay = QHBoxLayout()
+        lay.setSpacing(6)
+        outer.addLayout(lay)
+        for slot, col in enumerate(colors):
+            b = QToolButton()
+            b.setFixedSize(22, 22)
+            b.setEnabled(enabled)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(f"Style {slot + 1}")
+            b.setStyleSheet(f"QToolButton {{ background: {col}; border: 1px solid rgba(0,0,0,40); border-radius: 6px; padding: 0; }} "
+                            f"QToolButton:hover {{ border: 2px solid {theme.c('ACCENT')}; }} QToolButton:disabled {{ background: {theme.c('BORDER')}; }}")
+            b.clicked.connect(lambda _=False, sl=slot: self._pick(fn, sl))
+            lay.addWidget(b)
+        lay.addStretch(1)
+
+    @staticmethod
+    def _pick(fn, slot):
+        QApplication.closeAllPopups()
+        QTimer.singleShot(0, lambda: fn(slot))
 
 
 class CodeEditor(QPlainTextEdit):
@@ -740,34 +774,42 @@ class CodeEditor(QPlainTextEdit):
         if not cur.hasSelection() or not (cur.selectionStart() <= click.position() <= cur.selectionEnd()):
             self.setTextCursor(click)
             cur = self.textCursor()
-        menu = QMenu(self)
+        menu = ContextMenu(self)
         ro = self.isReadOnly()
         has_sel = cur.hasSelection()
         word = self._word_or_selection()
         if self.format_supported() and not ro and self.mini_toolbar:
-            from .minitoolbar import MiniToolbar                      # the formatting box on top, like Word
-            wa = QWidgetAction(menu)
-            wa.setDefaultWidget(MiniToolbar(self, menu))
-            menu.addAction(wa)
-            menu.addSeparator()
+            from .minitoolbar import MiniToolbar                      # the formatting bar on top, one compact row
+            menu.set_bar(MiniToolbar(self, menu))
 
-        def add(text, fn, enabled=True, shortcut=None):
-            a = menu.addAction(text, fn)
+        def ic(name):
+            return theme.icon(name, theme.c("MUTED"), 18)
+
+        def add(target, text, fn, enabled=True, shortcut=None, icon=None):
+            a = target.addAction(text, fn)
             a.setEnabled(enabled)
             if shortcut:
                 a.setShortcut(shortcut)
+            if icon:
+                a.setIcon(ic(icon))
             return a
+
+        def submenu(text, icon, enabled=True):
+            sub = menu.addMenu(ic(icon), text)
+            theme.round_menu(sub)
+            sub.setEnabled(enabled)
+            return sub
         # mistakes first
         if self.highlighter.spell_on and word and not has_sel and spellmod.speller.is_wrong(word) and not ro:
             sugg = spellmod.speller.suggestions(word)
             wc = QTextCursor(click)
             wc.select(QTextCursor.WordUnderCursor)
-            for s in sugg:
-                add(s, lambda _=False, s=s, c=QTextCursor(wc): c.insertText(s))
+            for sg in sugg:
+                add(menu, sg, lambda _=False, sg=sg, c=QTextCursor(wc): c.insertText(sg))
             if not sugg:
-                add("(no suggestions)", None, False)
-            add(f'Add "{word}" to dictionary', lambda: (spellmod.speller.add_word(word), self.highlighter.rehighlight()))
-            add("Ignore all", lambda: (spellmod.speller.ignore(word), self.highlighter.rehighlight()))
+                add(menu, "(no suggestions)", None, False)
+            add(menu, f'Add "{word}" to dictionary', lambda: (spellmod.speller.add_word(word), self.highlighter.rehighlight()))
+            add(menu, "Ignore all", lambda: (spellmod.speller.ignore(word), self.highlighter.rehighlight()))
             menu.addSeparator()
         if self.context_provider is not None:                         # extra commands from the window the editor lives in
             try:
@@ -775,52 +817,56 @@ class CodeEditor(QPlainTextEdit):
                     menu.addSeparator()
             except Exception:  # noqa: BLE001
                 pass
-        add("Cut", self.cut, has_sel and not ro, "Ctrl+X")
-        add("Copy", self.copy, has_sel, "Ctrl+C")
-        add("Paste", self.paste, not ro, "Ctrl+V")
-        add("Delete", lambda: self.textCursor().removeSelectedText(), has_sel and not ro)
-        add("Select All", self.selectAll, True, "Ctrl+A")
-        add("Begin/End Select" + (" (start is set)" if self._sel_mark else ""), lambda: self.begin_end_select(False))
-        add("Begin/End Select in Column Mode", lambda: self.begin_end_select(True))
+        add(menu, "Cut", self.cut, has_sel and not ro, "Ctrl+X", "cut")
+        add(menu, "Copy", self.copy, has_sel, "Ctrl+C", "copy")
+        add(menu, "Paste", self.paste, not ro, "Ctrl+V", "paste")
+        add(menu, "Delete", lambda: self.textCursor().removeSelectedText(), has_sel and not ro, "Del", "delete")
         menu.addSeparator()
-        for title, fn in (("Style all occurrences of token", self.style_all), ("Style one token", self.style_one)):
-            sub = menu.addMenu(title)
-            sub.setEnabled(bool(word))
-            for slot, col in enumerate(self.STYLE_COLORS):
-                a = sub.addAction(f"Using style {slot + 1}", lambda _=False, f=fn, s=slot: f(s))
-                pm = QPixmap(14, 14)
-                pm.fill(QColor(col))
-                a.setIcon(QIcon(pm))
-        clear = menu.addMenu("Clear style")
+        add(menu, "Select all", self.selectAll, True, "Ctrl+A", "selectall")
+        mode = submenu("Selection mode", "selmode")
+        add(mode, "Begin / end select" + (" (start is set)" if self._sel_mark else ""), lambda: self.begin_end_select(False))
+        add(mode, "Begin / end select in column mode", lambda: self.begin_end_select(True))
+        menu.addSeparator()
+        tokens = submenu("Style tokens", "brush")
+        for title, fn in (("Style all occurrences", self.style_all), ("Style one token", self.style_one)):
+            row = QWidgetAction(tokens)
+            row.setDefaultWidget(_SwatchRow(title, self.STYLE_COLORS, fn, bool(word)))
+            tokens.addAction(row)
+        tokens.addSeparator()
+        clear = tokens.addMenu("Clear style")
+        theme.round_menu(clear)
         clear.setEnabled(bool(self.styles_all or self.styles_one))
         for slot, col in enumerate(self.STYLE_COLORS):
-            a = clear.addAction(f"Clear style {slot + 1}", lambda _=False, s=slot: self.clear_style(s))
+            a = clear.addAction(f"Clear style {slot + 1}", lambda _=False, sl=slot: self.clear_style(sl))
             a.setEnabled(slot in self.styles_all or slot in self.styles_one)
         clear.addSeparator()
         clear.addAction("Clear all styles", lambda: self.clear_style())
+        if has_sel and not ro:
+            case = submenu("Change case", "case")
+            add(case, "UPPERCASE", lambda: self.transform_selection(str.upper))
+            add(case, "lowercase", lambda: self.transform_selection(str.lower))
+        can_line = bool(self.lang.comment) and not ro
+        can_block = (self.lang.block_comment is not None or bool(self.lang.comment)) and not ro
+        if can_line or can_block:
+            cm = submenu("Comment", "comment")
+            add(cm, "Toggle single line comment", self.toggle_comment, can_line)
+            add(cm, "Block comment", lambda: self.block_comment(True), can_block)
+            add(cm, "Block uncomment", lambda: self.block_comment(False), can_block)
         menu.addSeparator()
-        plug = menu.addMenu("Plugin commands")
+        if word:
+            shown = word if len(word) <= 24 else word[:23] + "\u2026"
+            add(menu, f"Search \u201c{shown}\u201d on the web", self.search_internet, True, None, "web")
+        target = self.path_in_text()
+        if target:
+            add(menu, "Open file at cursor", lambda: self.openPathRequested.emit(target), True, None, "file")
+        plug = submenu("Plugin commands", "plug")
         actions = self.plugin_actions_provider() if self.plugin_actions_provider else []
         for a in actions:
             plug.addAction(a)
         plug.setEnabled(bool(actions) and not ro)
-        menu.addSeparator()
-        add("UPPERCASE", lambda: self.transform_selection(str.upper), has_sel and not ro)
-        add("lowercase", lambda: self.transform_selection(str.lower), has_sel and not ro)
-        menu.addSeparator()
-        target = self.path_in_text()
-        add("Open File", lambda: self.openPathRequested.emit(target), bool(target))
-        add("Search on Internet", self.search_internet, bool(word))
-        menu.addSeparator()
-        can_line = bool(self.lang.comment) and not ro
-        add("Toggle Single Line Comment", self.toggle_comment, can_line)
-        can_block = (self.lang.block_comment is not None or bool(self.lang.comment)) and not ro
-        add("Block Comment", lambda: self.block_comment(True), can_block)
-        add("Block Uncomment", lambda: self.block_comment(False), can_block)
-        menu.addSeparator()
-        add("Hide Lines", self.hide_lines, not self.read_only_window)
+        add(menu, "Hide lines", self.hide_lines, not self.read_only_window, None, "hide")
         if self.user_hidden:
-            add("Show Hidden Lines", self.show_hidden_lines)
+            add(menu, "Show hidden lines", self.show_hidden_lines, True, None, "hide")
         return menu
 
     def keyPressEvent(self, e):

@@ -16,7 +16,7 @@ from PySide6.QtGui import QCursor, QTextCursor
 from PySide6.QtWidgets import (QMessageBox, QToolTip, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QProgressBar, QPushButton, QScrollBar, QSpinBox, QVBoxLayout, QWidget)
 
-from . import theme, util
+from . import dialogs, theme, util
 from .editor import CodeEditor
 from .highlighter import PLAIN, lang_for_path
 
@@ -511,7 +511,7 @@ class LargeFileView(QWidget):
             rx = search.compile_pattern(search.Options(text=box.text(), mode=search.REGEX if regex.isChecked() else search.NORMAL,
                                                        match_case=case.isChecked()))
         except search.SearchError as e:
-            QMessageBox.warning(self, "Filter lines", str(e))
+            dialogs.warning(self, "Filter lines", str(e))
             return
         self.run_filter(rx, invert.isChecked(), box.text())
 

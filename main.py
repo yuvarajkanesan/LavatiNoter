@@ -1413,13 +1413,20 @@ def selftest():
         assert ed.path_in_text() == os.path.normpath(p), ed.path_in_text()
         # the menu itself builds with every entry the design asks for
         from PySide6.QtCore import QPoint
-        menu = ed.build_context_menu(QPoint(20, 10))
+        menu = ed.build_context_menu(ed.cursorRect(ed.textCursor()).center())
         shown = [[x.text() for x in menu.actions()] + [x.text() for sub in menu.findChildren(QMenu) for x in sub.actions()]]
         flat = " | ".join(shown[0])
-        for need in ("Cut", "Copy", "Paste", "Delete", "Select All", "Begin/End Select", "Begin/End Select in Column Mode",
-                     "Style all occurrences of token", "Style one token", "Clear style", "Plugin commands", "UPPERCASE", "lowercase",
-                     "Open File", "Search on Internet", "Toggle Single Line Comment", "Block Comment", "Block Uncomment", "Hide Lines"):
+        for need in ("Cut", "Copy", "Paste", "Delete", "Select all", "Selection mode", "Begin / end select", "Begin / end select in column mode",
+                     "Style tokens", "Clear style", "Plugin commands", "Open file at cursor", "Hide lines"):
             assert need in flat, need
+        assert "UPPERCASE" not in flat                                         # case commands only appear with a selection
+        c = ed.textCursor()
+        c.setPosition(0)
+        c.setPosition(3, QTextCursor.KeepAnchor)
+        ed.setTextCursor(c)
+        menu = ed.build_context_menu(QPoint(20, 10))
+        flat = " | ".join([x.text() for x in menu.actions()] + [x.text() for sub in menu.findChildren(QMenu) for x in sub.actions()])
+        assert "Change case" in flat and "UPPERCASE" in flat and "lowercase" in flat and "on the web" in flat, flat
         ed.path = None
         ed.document().setModified(False)
 
@@ -1470,7 +1477,7 @@ def selftest():
         assert ed.toPlainText().startswith("<!-- hello --> big world"), ed.toPlainText()
         # the box is on top of the right-click menu
         menu = ed.build_context_menu(QPoint(10, 10))
-        boxes = [a.defaultWidget() for a in menu.actions() if isinstance(a, QWidgetAction)]
+        boxes = [w for a in menu.actions() if isinstance(a, QWidgetAction) for w in a.defaultWidget().findChildren(MiniToolbar)]
         assert boxes and isinstance(boxes[0], MiniToolbar)
         assert [b.text() for b in boxes[0].findChildren(type(boxes[0].styles_btn))][:1] if hasattr(boxes[0], "styles_btn") else True
         code = win.new_file("x = 1")
@@ -1684,28 +1691,9 @@ def selftest():
         assert any(r.checked and r.text == "Relaxed" for r in d2.findChildren(popups.Row)), "the current spacing is ticked"
         d2.chosen.emit(1.0)
         assert ed.toPlainText().startswith("alpha beta")
-        c = ed.textCursor()
-        c.setPosition(0)
-        c.setPosition(5, QTextCursor.KeepAnchor)
-        ed.setTextCursor(c)
-        win._make_highlight_popup().chosen.emit("#ffe566")
-        assert ed.toPlainText().startswith('<span style="background:#ffe566">alpha</span>'), ed.toPlainText()
-        c = ed.textCursor()
-        i = ed.toPlainText().index("alpha")
-        c.setPosition(i)
-        c.setPosition(i + 5, QTextCursor.KeepAnchor)
-        ed.setTextCursor(c)
-        win._make_highlight_popup().chosen.emit("")
-        assert ed.toPlainText().startswith("alpha beta"), ed.toPlainText()
-        ed.moveCursor(QTextCursor.End)
-        win._make_table_popup().chosen.emit(3, 2)
-        t = ed.toPlainText()
-        assert "| Column 1 | Column 2 | Column 3 |" in t and "| --- | --- | --- |" in t and t.count("|  |  |  |") == 2, t
         ed.moveCursor(QTextCursor.Start)
         ed.add_space_before()
         assert ed.toPlainText().startswith("\nalpha beta"), repr(ed.toPlainText()[:12])
-        g = popups.TableGrid()
-        assert (g.cols, g.rows) == (4, 3)
         ed.document().setModified(False)
 
     def t_theme():
@@ -1717,7 +1705,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("Word-style mini toolbar", t_word_style_toolbar), ("Paragraph group (align, spacing, shading, lists, sort)", t_paragraph_group), ("Compare dialogs (merge setup, folders, large files, sessions)", t_compare_dialogs), ("selected picture hides its path", t_selected_picture_path), ("formatting marks survive text changes", t_marks_survive_transforms), ("toolbar popups (line spacing, highlight, table)", t_toolbar_popups), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("Word-style mini toolbar", t_word_style_toolbar), ("Paragraph group (align, spacing, shading, lists, sort)", t_paragraph_group), ("Compare dialogs (merge setup, folders, large files, sessions)", t_compare_dialogs), ("selected picture hides its path", t_selected_picture_path), ("formatting marks survive text changes", t_marks_survive_transforms), ("toolbar popups (line spacing)", t_toolbar_popups), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout)
 
 from . import comparecore as cc
-from . import foldercmp, theme, util
+from . import dialogs, foldercmp, theme, util
 from .diffview import Side, file_side
 
 FILE_CHOICE = "File on disk..."
@@ -39,7 +39,7 @@ class SourceRow(QHBoxLayout):
         try:
             self.file_side = file_side(path)
         except OSError as e:
-            QMessageBox.warning(self.parent_widget, "Open", str(e))
+            dialogs.warning(self.parent_widget, "Open", str(e))
             self.box.setCurrentIndex(0)
             return
         self.box.setItemText(i, os.path.basename(path))
@@ -80,7 +80,7 @@ class MergeSetupDialog(QDialog):
     def _accept(self):
         sides = {k: r.side() for k, r in self.rows.items()}
         if any(s is None for s in sides.values()):
-            QMessageBox.information(self, "Three-way Merge", "Choose a document or a file for each of the three inputs.")
+            dialogs.information(self, "Three-way Merge", "Choose a document or a file for each of the three inputs.")
             return
         self.result_sides = sides
         self.accept()
@@ -214,7 +214,7 @@ class FolderCompareDialog(QDialog):
         try:
             left, right = file_side(pa), file_side(pb)
         except OSError as e:
-            QMessageBox.warning(self, "Open", str(e))
+            dialogs.warning(self, "Open", str(e))
             return
         self.host._show_diff(None, None, None, None, left_side=left, right_side=right)
 

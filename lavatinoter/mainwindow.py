@@ -4,23 +4,24 @@ import os
 import sys
 import time
 
-from PySide6.QtCore import QByteArray, QProcess, QProcessEnvironment, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import (QIcon, QPixmap, QColor, QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence,
+from PySide6.QtCore import QByteArray, QEvent, QObject, QPoint, QProcess, QProcessEnvironment, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (QFontDatabase, QIcon, QPixmap, QColor, QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence,
                            QTextCursor)
 from PySide6.QtWidgets import (QSplitter, QApplication, QCheckBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QFormLayout,
-                               QColorDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
-                               QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget, QComboBox, QLineEdit)
+                               QColorDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu, QMenuBar, QMessageBox, QPushButton, QSpinBox,
+                               QTabBar, QTabWidget, QToolBar, QToolButton, QVBoxLayout, QWidget, QComboBox, QLineEdit)
 
-from . import detect, export, filetypes, lsp, runner, updates
+from . import detect, dialogs, export, filetypes, lsp, runner, updates
 from . import APP_NAME, VERSION, diffview, editorconfig, formatter, gitinfo, hexview, plugins, session, symbols, theme, util
 from .editor import CodeEditor
 from .finddialog import FindDialog
+from .frameless import FramelessMixin
 from .highlighter import LANGS, PLAIN, lang_by_name, lang_for_path
 from .largefile import GoToPanel, LargeFileView
 from . import search
 from .palette import Picker, fuzzy
-from .minitoolbar import HIGHLIGHTS
-from .popups import HighlightPopup, LineSpacingPopup, PopupButton, TablePopup
+from .minitoolbar import FONTS, HIGHLIGHTS, SIZES_PT, TEXT_COLORS, _icon_with_bar
+from .popups import LineSpacingPopup, PopupButton
 from .panels import FunctionsPanel, ImagePreview, ImagesPanel, MinimapWidget, ResultsPanel, WorkspacePanel, reveal_in_explorer
 
 MB = 1024 * 1024
@@ -99,7 +100,63 @@ class PreferencesDialog(QDialog):
         s["auto_update_check"] = self.autoupdate.isChecked()
 
 
-class MainWindow(QMainWindow):
+class _PlusFollower(QObject):
+    """Keeps the new-tab button just after the last tab as tabs open, close, move or change width."""
+
+    def __init__(self, bar, plus):
+        super().__init__(bar)
+        self.bar, self.plus, self._busy = bar, plus, False
+
+    def place(self):
+        n = self.bar.count()
+        x = self.bar.tabRect(n - 1).right() + 6 if n else 4
+        x = max(0, min(x, self.bar.width() - self.plus.width() - 2))
+        y = max(0, (self.bar.height() - self.plus.height()) // 2)
+        if self.plus.pos() != QPoint(x, y):
+            self.plus.move(x, y)
+        self.plus.raise_()
+
+    def eventFilter(self, obj, e):
+        if e.type() in (QEvent.Paint, QEvent.Resize, QEvent.Show, QEvent.LayoutRequest) and not self._busy:
+            self._busy = True
+            QTimer.singleShot(0, self._run)
+        return False
+
+    def _run(self):
+        self._busy = False
+        self.place()
+
+
+class StickyToolBar(QToolBar):
+    """A toolbar whose overflow (the three dots) stays open when the pointer leaves it: only a click elsewhere closes it."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        QApplication.instance().installEventFilter(self)
+
+    def _ext(self):
+        return self.findChild(QToolButton, "qt_toolbar_ext_button")
+
+    def event(self, e):
+        if e.type() == QEvent.Leave:
+            ext = self._ext()
+            if ext is not None and ext.isChecked():
+                return True
+        return super().event(e)
+
+    def eventFilter(self, obj, e):
+        """A click anywhere outside the toolbar (and its opened overflow) closes the overflow."""
+        if e.type() == QEvent.MouseButtonPress:
+            ext = self._ext()
+            if ext is not None and ext.isChecked():
+                pos = e.globalPosition().toPoint()
+                inside = [w for w in (self, ext) if w.rect().contains(w.mapFromGlobal(pos))]
+                if not inside:
+                    QTimer.singleShot(0, lambda: ext.click() if ext.isChecked() else None)
+        return False
+
+
+class MainWindow(FramelessMixin, QMainWindow):
     gitReady = Signal(object, object, str, str)        # root, status, branch, HEAD id: from the Git worker thread to the window
     gitMarks = Signal(str, int, object)                # path, document revision, (HEAD text, marks)
 
@@ -118,6 +175,14 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(theme.app_icon())
         self.setAcceptDrops(True)
         self.resize(1280, 800)
+        self._mb = QMenuBar()
+        top = QWidget()
+        tl = QVBoxLayout(top)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(0)
+        tl.addWidget(self.setup_frameless(APP_NAME))
+        tl.addWidget(self._mb)
+        self.setMenuWidget(top)
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
@@ -129,12 +194,14 @@ class MainWindow(QMainWindow):
         self.tabs.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
         self.tabs.tabBar().customContextMenuRequested.connect(self._tab_menu)
         self.tabs.tabBar().tabBarDoubleClicked.connect(lambda i: self.new_file() if i < 0 else None)
-        plus = QToolButton()
+        bar = self.tabs.tabBar()
+        plus = QToolButton(bar)                  # sits right after the last tab, not in the far corner
         plus.setIcon(theme.icon("plus", theme.c("MUTED"), 18))
         plus.setToolTip("New document (Ctrl+N)")
         plus.clicked.connect(lambda _=False: self.new_file())
         self.plus = plus
-        self.tabs.setCornerWidget(plus, Qt.TopRightCorner)
+        self._plus_filter = _PlusFollower(bar, plus)
+        bar.installEventFilter(self._plus_filter)
         self.main_split = QSplitter(Qt.Horizontal)
         self.main_split.setChildrenCollapsible(False)
         self.main_split.setHandleWidth(1)
@@ -397,6 +464,9 @@ class MainWindow(QMainWindow):
         for a in (self.a_zoom_in2, self.a_next_tab2, self.a_prev_tab2, self.a_next_tab, self.a_prev_tab):
             self.addAction(a)
 
+    def menuBar(self):
+        return self._mb
+
     def _build_menus(self):
         mb = self.menuBar()
         m = mb.addMenu("File")
@@ -568,7 +638,7 @@ class MainWindow(QMainWindow):
     def _para_button(self, icon, tip, fn=None, menu=None, checkable=False):
         b = QToolButton()
         dd = False                                            # every menu button shows the same separate arrow beside its icon
-        b.setIcon(theme.icon(icon, theme.c("MUTED"), 24))
+        b.setIcon(theme.icon(icon, theme.c("MUTED"), 20))
         b.setToolTip(tip)
         b.setCheckable(checkable)
         if menu is not None:
@@ -620,9 +690,7 @@ class MainWindow(QMainWindow):
             self.align_buttons[name] = b
             aw(b)
         self._popup_buttons = []
-        for icon, tip, make in (("linespacing", "Line spacing", self._make_spacing_popup),
-                                ("shading", "Highlight color", self._make_highlight_popup),
-                                ("borders", "Insert table", self._make_table_popup)):
+        for icon, tip, make in (("linespacing", "Line spacing", self._make_spacing_popup),):
             b = PopupButton(icon, tip, make)
             self._popup_buttons.append(b)
             aw(b)
@@ -645,30 +713,6 @@ class MainWindow(QMainWindow):
         v, ok = QInputDialog.getDouble(self, "Line spacing options", "Line spacing (1.0 = single):", 1.15, 1.0, 6.0, 2)
         if ok:
             self._para_call("set_line_spacing", v)
-
-    def _make_highlight_popup(self):
-        d = HighlightPopup("", self)
-        d.chosen.connect(lambda c: self._para_call("set_highlight", c or None))
-
-        def more():
-            col = QColorDialog.getColor(QColor("#ffe566"), self, "Highlight color")
-            if col.isValid():
-                self._para_call("set_highlight", col.name())
-        d.more.connect(more)
-        return d
-
-    def _make_table_popup(self):
-        d = TablePopup(self)
-        d.chosen.connect(lambda c, r: self._para_call("insert_table", c, r))
-
-        def custom():
-            c, ok = QInputDialog.getInt(self, "Custom table", "Columns:", 4, 1, 30)
-            if ok:
-                r, ok = QInputDialog.getInt(self, "Custom table", "Rows (without the header):", 3, 1, 500)
-                if ok:
-                    self._para_call("insert_table", c, r)
-        d.custom.connect(custom)
-        return d
 
     def _para_call(self, name, *args):
         ed = self.editor_of(self.current())
@@ -693,17 +737,120 @@ class MainWindow(QMainWindow):
             act.setVisible(self.a_view_para.isChecked())
 
     def _build_toolbar(self):
-        tb = self.addToolBar("Main")
+        tb = StickyToolBar("Main", self)
+        self.addToolBar(tb)
         tb.setObjectName("main-toolbar")
         tb.setMovable(False)
         tb.setIconSize(QSize(20, 20))
-        for a in (self.a_new, self.a_open, self.a_save, self.a_save_all, self.a_close, None, self.a_cut, self.a_copy,
-                  self.a_paste, self.a_paste_image, None, self.a_undo, self.a_redo, None, self.a_bold, self.a_italic,
-                  self.a_underline, self.a_size_up, self.a_size_down, None, self.a_find, self.a_replace, None,
-                  self.a_zoom_in, self.a_zoom_out, None, self.view_wrap, self.view_ws, self.view_map):
-            tb.addSeparator() if a is None else tb.addAction(a)
+        for a in (self.a_new, self.a_open, self.a_save, self.a_save_all, None, self.a_cut, self.a_copy,
+                  self.a_paste, self.a_paste_image, None, self.a_undo, self.a_redo, None, "format", None,
+                  self.a_find, self.a_replace, None, self.a_zoom_in, self.a_zoom_out, None, self.view_wrap):
+            if a is None:
+                tb.addSeparator()
+            elif a == "format":
+                self._build_format_cluster(tb)
+            else:
+                tb.addAction(a)
         self.toolbar = tb
         self._build_para_toolbar()
+
+    def _build_format_cluster(self, tb):
+        """Font, size, bold / italic / underline, highlight and text colour, styles and comment: one compact group."""
+        self._fmt_icons = []                                    # (button, icon name, colour attribute) pairs, restyled with the theme
+        self._fmt_colors = {"hl": HIGHLIGHTS[0][1], "fc": TEXT_COLORS[0][1]}
+        have = set(QFontDatabase.families())
+        self.font_box = QComboBox()
+        self.font_box.setFixedWidth(104)
+        self.font_box.setToolTip("Font")
+        self.font_box.addItem("Font", "")
+        for f in FONTS:
+            if f in have:
+                self.font_box.addItem(f, f)
+        self.font_box.addItem("(none: normal)", "-")
+        self.font_box.activated.connect(self._fmt_font)
+        tb.addWidget(self.font_box)
+        self.size_box = QComboBox()
+        self.size_box.setEditable(True)
+        self.size_box.setFixedWidth(80)
+        self.size_box.setToolTip("Text size (pt)")
+        self.size_box.addItems([str(n) for n in SIZES_PT])
+        self.size_box.setCurrentText("11")
+        self.size_box.activated.connect(lambda _i: self._fmt_size())
+        self.size_box.lineEdit().returnPressed.connect(self._fmt_size)
+        tb.addWidget(self.size_box)
+        for a in (self.a_bold, self.a_italic, self.a_underline):
+            tb.addAction(a)
+        for icon, tip, colors, attr, call in (("highlight", "Highlight colour", HIGHLIGHTS, "hl", "set_highlight"),
+                                              ("fontcolor", "Text colour", TEXT_COLORS, "fc", "set_text_color")):
+            b = QToolButton()
+            b.setIcon(_icon_with_bar(icon, self._fmt_colors[attr]))
+            b.setToolTip(tip + " (click to use the colour shown, right-click or hold for more)")
+            b.setPopupMode(QToolButton.DelayedPopup)
+            b.setContextMenuPolicy(Qt.CustomContextMenu)
+            b.setStyleSheet("QToolButton::menu-indicator { image: none; width: 0; }")
+            m = QMenu(b)
+            theme.round_menu(m)
+            for name, col in colors:
+                m.addAction(self._swatch(col), name, lambda _=False, c=col, a=attr, i=icon, bt=b, f=call: self._fmt_pick(a, i, bt, f, c))
+            m.addSeparator()
+            m.addAction("No colour", lambda f=call: self._fmt_call(f, None))
+            b.setMenu(m)
+            b.customContextMenuRequested.connect(lambda pos, bt=b, mm=m: mm.popup(bt.mapToGlobal(pos)))
+            b.clicked.connect(lambda _=False, a=attr, f=call: self._fmt_call(f, self._fmt_colors[a]))
+            self._fmt_icons.append((b, icon, attr))
+            tb.addWidget(b)
+        styles = QToolButton()
+        styles.setIcon(theme.icon("styles", theme.c("TEXT"), 20))
+        styles.setToolTip("Styles")
+        styles.setPopupMode(QToolButton.InstantPopup)
+        sm = QMenu(styles)
+        theme.round_menu(sm)
+        for name in CodeEditor.STYLES:
+            sm.addAction(name, lambda _=False, n=name: self._fmt_call("apply_style", n))
+        styles.setMenu(sm)
+        self._fmt_icons.append((styles, "styles", None))
+        tb.addWidget(styles)
+
+    @staticmethod
+    def _swatch(color):
+        pm = QPixmap(14, 14)
+        pm.fill(QColor(color))
+        return QIcon(pm)
+
+    def _fmt_call(self, name, *args):
+        page = self.current()
+        ed = self.editor_of(page)
+        if ed is None or page.is_large:
+            return
+        if not ed.format_supported():
+            self.flash("Fonts, colours and styles work in text, Markdown and HTML documents.")
+            return
+        if getattr(ed, name)(*args) is False:
+            self.flash("That needs a document you can edit.")
+        ed.setFocus()
+
+    def _fmt_pick(self, attr, icon, button, call, color):
+        self._fmt_colors[attr] = color
+        button.setIcon(_icon_with_bar(icon, color))
+        self._fmt_call(call, color)
+
+    def _fmt_font(self, index):
+        v = self.font_box.itemData(index)
+        if v == "-":
+            self._fmt_call("set_font_family", None)
+        elif v:
+            self._fmt_call("set_font_family", v)
+
+    def _fmt_size(self):
+        text = self.size_box.currentText().strip()
+        if text.isdigit() and 4 <= int(text) <= 200:
+            self._fmt_call("set_text_size", round(int(text) * 96 / 72))
+
+    def _sync_fmt_box(self, ed):
+        """Shows the size of the text at the caret in the size box."""
+        if ed is None or not hasattr(ed, "_current_size_px") or self.size_box.hasFocus() or self.size_box.view().isVisible():
+            return
+        self.size_box.setCurrentText(str(round(ed._current_size_px() * 72 / 96)))
 
     def _build_status(self):
         sb = self.statusBar()
@@ -747,12 +894,15 @@ class MainWindow(QMainWindow):
         for a, icon in self._icon_actions:
             a.setIcon(theme.icon(icon, k("MUTED")))
         self.plus.setIcon(theme.icon("plus", k("MUTED"), 18))
+        for b, icon, attr in getattr(self, "_fmt_icons", []):
+            b.setIcon(_icon_with_bar(icon, self._fmt_colors[attr]) if attr else theme.icon(icon, k("TEXT"), 20))
         for b in getattr(self, "_popup_buttons", []):
             b.restyle()
         for b, icon, dd in getattr(self, "_para_buttons", []):
             b.setIcon(theme.icon(icon, k("MUTED"), 24, dropdown=dd))
         self.results.close_btn.setIcon(theme.icon("close", k("MUTED"), 16))
         theme.set_titlebar(self)
+        self.title_bar.restyle()
         for page in self.all_tabs():
             if hasattr(page, "restyle"):
                 page.restyle()
@@ -817,7 +967,8 @@ class MainWindow(QMainWindow):
         close.setAutoRaise(True)
         close.setToolTip("Close (Ctrl+W)")
         close.clicked.connect(lambda _=False, p=page: self.close_tab(p))
-        close.setStyleSheet("QToolButton { padding: 3px; border-radius: 4px; }")
+        close.setStyleSheet(f"QToolButton {{ background: transparent; border: none; padding: 3px; border-radius: 6px; }} "
+                            f"QToolButton:hover {{ background: {theme.c('SELECTED')}; }}")
         hl.addWidget(close)
         self.tabs.tabBar().setTabButton(i, QTabBar.RightSide, box)
 
@@ -901,15 +1052,17 @@ class MainWindow(QMainWindow):
         if self.split_pane is not None and self.split_page is page:
             self.close_split()
         if not force and self._modified(page) and not self.settings["restore_session"]:
-            r = QMessageBox.question(self, "Unsaved changes", f'Save changes to "{self.tab_title(page)}"?',
-                                     QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
+            r = dialogs.question(self, "Unsaved changes", "", QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save,
+                                 heading=f'Save changes to “{self.tab_title(page)}”?',
+                                 detail="If you close this tab without saving, your edits will be lost.")
             if r == QMessageBox.Cancel:
                 return False
             if r == QMessageBox.Save and not self.save(page):
                 return False
         elif not force and self._modified(page):
-            r = QMessageBox.question(self, "Unsaved changes", f'"{self.tab_title(page)}" has unsaved changes.\n\nClose it and discard them?',
-                                     QMessageBox.Discard | QMessageBox.Save | QMessageBox.Cancel, QMessageBox.Save)
+            r = dialogs.question(self, "Unsaved changes", "", QMessageBox.Discard | QMessageBox.Save | QMessageBox.Cancel, QMessageBox.Save,
+                                 heading=f'Save changes to “{self.tab_title(page)}”?',
+                                 detail="If you close this tab without saving, your edits will be lost.")
             if r == QMessageBox.Cancel:
                 return False
             if r == QMessageBox.Save and not self.save(page):
@@ -995,7 +1148,7 @@ class MainWindow(QMainWindow):
             self.raise_window()
             return existing
         if not os.path.isfile(path):
-            QMessageBox.warning(self, APP_NAME, f"The file was not found:\n{path}")
+            dialogs.warning(self, APP_NAME, f"The file was not found:\n{path}")
             return None
         blank = self._blank_tab()
         QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -1007,7 +1160,7 @@ class MainWindow(QMainWindow):
                 page = self._open_text(path)
         except OSError as e:
             QApplication.restoreOverrideCursor()
-            QMessageBox.warning(self, APP_NAME, f"Could not open the file:\n{path}\n\n{e}")
+            dialogs.warning(self, APP_NAME, f"Could not open the file:\n{path}\n\n{e}")
             return None
         finally:
             while QApplication.overrideCursor() is not None:
@@ -1058,16 +1211,13 @@ class MainWindow(QMainWindow):
         text, enc, eol, binary = util.read_text_file(path)
         if binary:
             QApplication.restoreOverrideCursor()
-            box = QMessageBox(QMessageBox.Question, APP_NAME, f'"{os.path.basename(path)}" looks like a binary file.')
-            hexb = box.addButton("Open as hex", QMessageBox.AcceptRole)
-            txtb = box.addButton("Open as text", QMessageBox.ActionRole)
-            box.addButton(QMessageBox.Cancel)
-            box.setDefaultButton(hexb)
-            box.exec()
+            choice = dialogs.show(self, APP_NAME, f"“{os.path.basename(path)}” looks like a binary file.",
+                                  "Open it in the hex view, or force it open as text.", "info",
+                                  (("Open as hex", "hex", "primary"), ("Open as text", "text", "normal"), ("Cancel", None, "normal")))
             QApplication.setOverrideCursor(Qt.WaitCursor)
-            if box.clickedButton() is hexb:
+            if choice == "hex":
                 return self.open_hex(path)
-            if box.clickedButton() is not txtb:
+            if choice != "text":
                 return None
         ed = self._make_editor()
         ed.path = path
@@ -1242,7 +1392,7 @@ class MainWindow(QMainWindow):
         path = filetypes.with_extension(os.path.normpath(dlg.selectedFiles()[0]), dlg.selectedNameFilter())
         # the dialog only asked about overwriting the name as typed: ask again if adding the extension hit another file
         if os.path.exists(path) and os.path.normcase(path) != os.path.normcase(os.path.normpath(dlg.selectedFiles()[0])):
-            r = QMessageBox.question(self, "Save As", f"{os.path.basename(path)} already exists.\nDo you want to replace it?",
+            r = dialogs.question(self, "Save As", f"{os.path.basename(path)} already exists.\nDo you want to replace it?",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if r != QMessageBox.Yes:
                 return ""
@@ -1259,14 +1409,14 @@ class MainWindow(QMainWindow):
             try:
                 util.write_text_file(path, text, page.encoding, page.eol, "strict")
             except UnicodeEncodeError:
-                r = QMessageBox.question(self, APP_NAME, f"Some characters cannot be stored in {page.encoding}.\n\nSave as UTF-8 instead?",
+                r = dialogs.question(self, APP_NAME, f"Some characters cannot be stored in {page.encoding}.\n\nSave as UTF-8 instead?",
                                          QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Yes)
                 if r != QMessageBox.Yes:
                     return False
                 page.encoding = "UTF-8"
                 util.write_text_file(path, text, page.encoding, page.eol)
         except OSError as e:
-            QMessageBox.critical(self, APP_NAME, f"Could not save the file:\n{path}\n\n{e}")
+            dialogs.critical(self, APP_NAME, f"Could not save the file:\n{path}\n\n{e}")
             return False
         page.document().setModified(False)
         page.mtime = os.path.getmtime(path)
@@ -1289,7 +1439,7 @@ class MainWindow(QMainWindow):
         page = self.current()
         if page is not None and page.path and not page.is_large:
             if self._modified(page):
-                r = QMessageBox.question(self, APP_NAME, "Discard your changes and reload the file from disk?",
+                r = dialogs.question(self, APP_NAME, "Discard your changes and reload the file from disk?",
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 if r != QMessageBox.Yes:
                     return
@@ -1333,7 +1483,7 @@ class MainWindow(QMainWindow):
             if p.mtime is not None and abs(m - p.mtime) > 0.5:
                 p.mtime = m
                 if self._modified(p):
-                    r = QMessageBox.question(self, APP_NAME, f'"{self.tab_title(p)}" was changed by another program, and you have unsaved changes.\n\nReload it and lose your changes?',
+                    r = dialogs.question(self, APP_NAME, f'"{self.tab_title(p)}" was changed by another program, and you have unsaved changes.\n\nReload it and lose your changes?',
                                              QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                     if r == QMessageBox.Yes:
                         self._reload(p)
@@ -1417,7 +1567,7 @@ class MainWindow(QMainWindow):
             self.flash("Only saved documents can be reopened with another encoding.")
             return
         if self._modified(page):
-            r = QMessageBox.question(self, APP_NAME, "Reopening discards unsaved changes. Continue?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            r = dialogs.question(self, APP_NAME, "Reopening discards unsaved changes. Continue?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if r != QMessageBox.Yes:
                 return
         self._reload(page, label)
@@ -1570,7 +1720,7 @@ class MainWindow(QMainWindow):
             self.flash("Select some text in a text, Markdown or HTML document to change its size.")
 
     def _format_help(self):
-        QMessageBox.information(self, "Formatting marks", "Bold, italic, underline and text size are stored as marks in the text, "
+        dialogs.information(self, "Formatting marks", "Bold, italic, underline and text size are stored as marks in the text, "
                                 "so the file stays plain text. The editor hides the marks and just shows the formatting (View > Show Formatting Marks reveals them):\n\n  **bold**   *italic*   <u>underline</u>\n  <span style=\"font-size:24px\">size</span>"
                                 "\n\nThe editor shows them formatted and dims the marks; Markdown viewers and browsers render the same.\n"
                                 "In HTML documents <b>, <i> and <u> are used. Code files are left alone.")
@@ -2251,19 +2401,17 @@ class MainWindow(QMainWindow):
         self.settings.save()
         if res is None:
             if manual:
-                QMessageBox.information(self, "Check for updates", f"Could not reach GitHub ({err}).\nCheck your connection and try again.")
+                dialogs.information(self, "Check for updates", f"Could not reach GitHub ({err}).\nCheck your connection and try again.")
             return
         if res["newer"]:
-            box = QMessageBox(QMessageBox.Information, "Update available", f"{APP_NAME} {res['tag']} is available (you have {VERSION}).")
-            if res["notes"]:
-                box.setDetailedText(res["notes"])
-            go = box.addButton("Open download page", QMessageBox.AcceptRole)
-            box.addButton("Later", QMessageBox.RejectRole)
-            box.exec()
-            if box.clickedButton() is go:
+            notes = (res["notes"] or "").strip()
+            go = dialogs.show(self, "Update available", f"{APP_NAME} {res['tag']} is available",
+                              f"You have {VERSION}." + (f"\n\n{notes[:400]}" if notes else ""), "info",
+                              (("Open download page", True, "primary"), ("Later", False, "normal")))
+            if go:
                 QDesktopServices.openUrl(QUrl(res["url"]))
         elif manual:
-            QMessageBox.information(self, "Check for updates",
+            dialogs.information(self, "Check for updates",
                                     f"You have the newest version ({VERSION})." if not res.get("none") else
                                     f"No releases are published yet. You have version {VERSION}.")
 
@@ -2466,9 +2614,9 @@ class MainWindow(QMainWindow):
     # ---- plugins ---------------------------------------------------------------------------------------------------------
     def set_plugins_enabled(self, on):
         if on and not self.settings["plugins_enabled"]:
-            r = QMessageBox.warning(self, "Enable plugins",
+            r = dialogs.warning(self, "Enable plugins", "Enable plugins?\n"
                                     "Plugins are Python files from your plugins folder. They run with the same rights as "
-                                    f"{APP_NAME} and can read and change your files.\n\nOnly enable plugins you wrote or trust.\n\n"
+                                    f"{APP_NAME} and can read and change your files. Only enable plugins you wrote or trust.\n\n"
                                     f"Folder: {plugins.plugins_dir()}", QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Cancel)
             if r != QMessageBox.Ok:
                 return
@@ -2775,6 +2923,8 @@ class MainWindow(QMainWindow):
         page = self.current()
         if page is None:
             return
+        if not page.is_large:
+            self._sync_fmt_box(page)
         if page.is_large:
             line, col, off = page.caret_info()
             total = page.total_lines()

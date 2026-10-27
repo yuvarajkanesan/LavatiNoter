@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox,
                                QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton, QTabBar,
                                QVBoxLayout, QWidget)
 
-from . import search, theme
+from . import dialogs, search, theme
 
 
 from .finddialog_pos import PosMap  # noqa: E402
@@ -507,14 +507,10 @@ class FindDialog(QDialog):
             search.compile_pattern(o)
             if not self._check_dir(o):
                 return
-            ask = QMessageBox(self)
-            ask.setIcon(QMessageBox.Warning)
-            ask.setWindowTitle("Replace in Files")
-            ask.setText(f'Replace "{o.text}" with "{o.replacement}" in every {o.filters} file under\n{o.directory}?')
-            ask.setInformativeText("This changes the files on disk and cannot be undone. Open documents with unsaved changes are skipped.")
-            ask.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
-            ask.setDefaultButton(QMessageBox.Cancel)
-            if ask.exec() != QMessageBox.Yes:
+            if not dialogs.show(self, "Replace in Files", f"Replace “{o.text}” with “{o.replacement}”?",
+                                f"In every {o.filters} file under {o.directory}. This changes the files on disk and cannot be undone. "
+                                "Open documents with unsaved changes are skipped.", "warning",
+                                (("Cancel", False, "normal"), ("Replace", True, "danger")), 0):
                 return
             self._remember()
             QApplication.setOverrideCursor(Qt.WaitCursor)

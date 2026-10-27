@@ -543,6 +543,73 @@ def _ic_map(p):
         p.drawLine(5, y, x2, y)
 
 
+def _ic_delete(p):
+    p.drawLine(4.5, 6.5, 19.5, 6.5)
+    _poly(p, [(9, 6.5), (9, 4), (15, 4), (15, 6.5)])
+    _poly(p, [(6.5, 6.5), (7.5, 20), (16.5, 20), (17.5, 6.5)])
+    p.drawLine(10, 10.5, 10, 16.5)
+    p.drawLine(14, 10.5, 14, 16.5)
+
+
+def _ic_selectall(p):
+    pen = p.pen()
+    pen.setStyle(Qt.DashLine)
+    p.setPen(pen)
+    p.drawRoundedRect(QRectF(3.5, 3.5, 17, 17), 2.5, 2.5)
+    pen.setStyle(Qt.SolidLine)
+    p.setPen(pen)
+    for y, x2 in ((9, 16), (13, 16), (17, 13)):
+        p.drawLine(8, y, x2, y)
+
+
+def _ic_selmode(p):
+    p.drawLine(5, 4, 5, 20)
+    p.drawLine(19, 4, 19, 20)
+    for y in (8, 12, 16):
+        p.drawLine(9, y, 15, y)
+
+
+def _ic_brush(p):
+    path = QPainterPath()
+    path.moveTo(12, 3)
+    path.cubicTo(6.5, 3, 3, 7, 3, 12)
+    path.cubicTo(3, 17, 7, 21, 12, 21)
+    path.cubicTo(13.2, 21, 13.8, 20.2, 13.8, 19.4)
+    path.cubicTo(13.8, 18.4, 13, 18, 13, 17.2)
+    path.cubicTo(13, 16.4, 13.7, 15.8, 14.5, 15.8)
+    path.lineTo(16, 15.8)
+    path.cubicTo(18.8, 15.8, 21, 13.6, 21, 10.8)
+    path.cubicTo(21, 6.4, 17, 3, 12, 3)
+    p.drawPath(path)
+    for x, y in ((7.5, 10.5), (12, 7.5), (16.5, 10.5)):
+        p.drawPoint(QPointF(x, y))
+
+
+def _ic_case(p):
+    _poly(p, [(3, 18), (7.5, 6), (12, 18)])
+    p.drawLine(4.7, 14, 10.3, 14)
+    p.drawEllipse(QRectF(14, 11.5, 6, 6))
+    p.drawLine(20, 11, 20, 18)
+
+
+def _ic_plug(p):
+    p.drawLine(9, 2.5, 9, 8)
+    p.drawLine(15, 2.5, 15, 8)
+    _poly(p, [(6, 8), (18, 8), (18, 11), (12, 17), (6, 11)], True)
+    p.drawLine(12, 17, 12, 21.5)
+
+
+def _ic_web(p):
+    p.drawEllipse(QRectF(4, 4, 14, 14))
+    p.drawLine(16, 16, 20.5, 20.5)
+
+
+def _ic_hide(p):
+    p.drawLine(3.5, 3.5, 20.5, 20.5)
+    _poly(p, [(10.6, 6.1), (12, 6), (17.5, 8.5), (21, 12), (19, 14.8)])
+    _poly(p, [(6.6, 6.6), (3, 12), (7.5, 17.5), (12, 18), (15, 17)])
+
+
 _ICONS = {n[4:]: f for n, f in globals().items() if n.startswith("_ic_")}
 
 
@@ -675,6 +742,13 @@ def lavati_mark_pixmap(size):
     return pm
 
 
+def note_mark_pixmap(size, dpr=2):
+    """The app icon at `size` points (rendered sharp for high-DPI screens), used in the title bar and dialog headers."""
+    pm = logo_pixmap(size * dpr)
+    pm.setDevicePixelRatio(dpr)
+    return pm
+
+
 def lavati_wordmark_pixmap(width, tagline=True, dark_text=LOGO_DARK):
     """'lavati' with the chevron as its v, plus the SOFTWARES line."""
     from PySide6.QtGui import QFontMetricsF
@@ -782,7 +856,9 @@ QMenu::item:selected {{ background: {k['SELECTED']}; }}
 QMenu::item:disabled {{ color: {k['FAINT']}; }}
 QMenu::separator {{ height: 1px; background: {k['BORDER']}; margin: 4px 6px; }}
 QToolBar {{ background: {k['PANEL']}; border: 1px solid {k['BORDER']}; border-radius: 12px; margin: 6px 12px 4px 12px; padding: 3px 8px; spacing: 2px; }}
-QToolBar::separator {{ width: 1px; background: {k['BORDER']}; margin: 4px 7px; }}
+QToolBar::separator {{ width: 1px; background: {k['BORDER']}; margin: 4px 1px; }}
+QToolBar > QToolButton {{ padding: 2px; }}
+QToolBarExtension {{ width: 0px; max-width: 0px; padding: 0; margin: 0; border: none; image: none; }}
 QToolButton {{ background: transparent; border: none; border-radius: 6px; padding: 6px; }}
 QToolButton:hover {{ background: {k['HOVER']}; }}
 QToolButton:pressed, QToolButton:checked {{ background: {k['SELECTED']}; }}
@@ -859,6 +935,24 @@ def menu_qss():
             f"QMenu::item {{ padding: 6px 28px 6px 14px; border-radius: 4px; background: transparent; }} "
             f"QMenu::item:selected {{ background: {k['SELECTED']}; }} QMenu::item:disabled {{ color: {k['FAINT']}; }} "
             f"QMenu::separator {{ height: 1px; background: {k['BORDER']}; margin: 4px 6px; }}")
+
+
+def round_menu(menu, floating=False):
+    """Rounded, softer right-click menu: a translucent frameless popup styled from the active palette."""
+    k = PALETTES[THEME_NAME]
+    menu.setProperty("_styled", True)
+    menu.setWindowFlag(Qt.FramelessWindowHint, True)
+    menu.setWindowFlag(Qt.NoDropShadowWindowHint, True)
+    menu.setAttribute(Qt.WA_TranslucentBackground, True)
+    frame = ("background: transparent; border: none; padding: 14px; icon-size: 18px; font-size: 13px;" if floating else
+             f"background: {k['PANEL']}; border: 1px solid {k['BORDER2']}; border-radius: 12px; padding: 6px; icon-size: 18px;")
+    menu.setStyleSheet(
+        f"QMenu {{ {frame} color: {k['TEXT']}; }} "
+        f"QMenu::item {{ padding: {'7px 20px 7px 8px' if floating else '7px 18px 7px 8px'}; margin: 1px 0; border-radius: 9px; background: transparent; }} "
+        f"QMenu::icon {{ padding-left: 8px; }} "
+        f"QMenu::item:selected {{ background: {k['HOVER']}; color: {k['TEXT']}; }} QMenu::item:disabled {{ color: {k['FAINT']}; }} "
+        f"QMenu::separator {{ height: 1px; background: {k['BORDER']}; margin: 5px 8px; }} "
+        f"QMenu::right-arrow {{ margin-right: 8px; }}")
 
 
 def set_titlebar(widget):

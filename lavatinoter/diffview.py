@@ -12,8 +12,9 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QWidget)
 
 from . import comparecore as cc
-from . import theme, util
+from . import dialogs, theme, util
 from .editor import CodeEditor
+from .frameless import FramelessMixin
 
 MAX_LINES = cc.MAX_EXACT_LINES
 
@@ -261,7 +262,7 @@ class DiffMap(QWidget):
             self._go(e)
 
 
-class DiffWindow(QDialog):
+class DiffWindow(FramelessMixin, QDialog):
     def __init__(self, parent, left, right, base=None, lang=None, font_size=11, options=None, host=None, anchors=None, mode="2way"):
         super().__init__(parent)
         self.host = host or parent
@@ -284,6 +285,7 @@ class DiffWindow(QDialog):
         self._applied = [left.text, right.text]
         self.setWindowTitle(f"Compare: {left.title}  ↔  {right.title}")
         self.setWindowFlag(Qt.Window, True)
+        self.setup_frameless("Compare")
         self.resize(1320, 800)
         for s in (left, right):
             if len(s.text.split("\n")) > MAX_LINES:
@@ -356,7 +358,13 @@ class DiffWindow(QDialog):
         return box, ed, btn, enc
 
     def _build(self):
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(self.title_bar)
+        body = QWidget()
+        outer.addWidget(body, 1)
+        root = QVBoxLayout(body)
         root.setContentsMargins(8, 6, 8, 8)
         root.setSpacing(4)
         # row 1: what changed, moving around, copying, layout, reports
@@ -814,7 +822,7 @@ class DiffWindow(QDialog):
             which = list(range(len(self.blocks)))
         target = 1 if to_right else 0
         if self.edits[target].isReadOnly():
-            QMessageBox.information(self, "Compare", "That side is read-only.")
+            dialogs.information(self, "Compare", "That side is read-only.")
             return
         a, b = self._lines(0), self._lines(1)
         src, dst = (a, b) if to_right else (b, a)
@@ -852,7 +860,7 @@ class DiffWindow(QDialog):
         try:
             fn(text)
         except OSError as e:
-            QMessageBox.warning(self, "Compare", f"Could not apply the changes:\n{e}")
+            dialogs.warning(self, "Compare", f"Could not apply the changes:\n{e}")
             return
         self._applied[side] = text
         b = self.apply_btns[side]
@@ -864,15 +872,15 @@ class DiffWindow(QDialog):
     def closeEvent(self, e):
         pending = self._unapplied()
         if pending:
-            box = QMessageBox(QMessageBox.Question, "Compare", "You changed text in the comparison that is not applied yet.")
-            apply_b = box.addButton("Apply and close", QMessageBox.AcceptRole)
-            box.addButton("Discard changes", QMessageBox.DestructiveRole)
-            cancel = box.addButton(QMessageBox.Cancel)
-            box.exec()
-            if box.clickedButton() is cancel:
+            names = " and ".join(self.sides[s].title for s in pending)
+            choice = dialogs.show(self, "Discard changes", f"Discard changes to {names}?",
+                                  "Edits you made in this comparison and haven’t applied will be lost. The file on disk stays as it is.",
+                                  "trash", (("Keep editing", "keep", "normal"), ("Apply and close", "apply", "primary"),
+                                            ("Discard changes", "discard", "danger")), 0, cancel="keep")
+            if choice == "keep":
                 e.ignore()
                 return
-            if box.clickedButton() is apply_b:
+            if choice == "apply":
                 for s in pending:
                     self.apply(s)
         super().closeEvent(e)
@@ -931,7 +939,7 @@ class DiffWindow(QDialog):
         self.mode = mode
         three = mode == "3way"
         if three and self.base_edit is None:
-            QMessageBox.information(self, "Compare", "A three-way merge needs a base (the common original): use Tools > Compare > Three-way Merge...")
+            dialogs.information(self, "Compare", "A three-way merge needs a base (the common original): use Tools > Compare > Three-way Merge...")
             self.mode_box.blockSignals(True)
             self.mode_box.setCurrentIndex(0)
             self.mode_box.blockSignals(False)
