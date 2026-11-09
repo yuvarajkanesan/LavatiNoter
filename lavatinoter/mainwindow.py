@@ -1158,10 +1158,18 @@ class MainWindow(FramelessMixin, QMainWindow):
             self._update_title()
             self._update_status()
 
+    def _next_untitled(self):
+        """"Untitled N" with the lowest N no open tab uses, so a fresh start is "Untitled 1" again."""
+        used = {p.title for p in self.all_tabs() if getattr(p, "title", None)}
+        n = 1
+        while f"Untitled {n}" in used:
+            n += 1
+        return f"Untitled {n}"
+
     def new_file(self, text="", title=None, language=None, after_current=False):
         self._untitled += 1
         ed = self._make_editor()
-        ed.title = title or f"Untitled {self._untitled}"
+        ed.title = title or self._next_untitled()
         ed.lang_auto = language is None
         ed.setPlainText(text)
         ed.document().setModified(bool(text) and title is not None)
@@ -3270,7 +3278,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         try:
             if "text" in entry:
                 ed = self._make_editor()
-                ed.title = entry.get("title") or f"Untitled {self._untitled + 1}"
+                ed.title = entry.get("title") or self._next_untitled()
                 ed.path = p if p and os.path.isfile(p) else None
                 ed.encoding = entry.get("encoding", "UTF-8")
                 ed.eol = entry.get("eol", "\r\n")
