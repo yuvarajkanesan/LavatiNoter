@@ -1240,7 +1240,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         for p in pages:
             meta = "unsaved" if self._modified(p) else ("empty" if self._is_empty_untitled(p) else "")
             md = (not p.is_large) and p.lang.name == "Markdown"
-            entries.append((p, self.tab_title(p), md, meta, p is cur))
+            entries.append((p, self.tab_title(p), md, meta, p is cur, getattr(p, "path", None) or self.tab_title(p)))
         empties = sum(1 for p in pages if self._is_empty_untitled(p) and p is not cur)
         last = self._closed_tabs[-1] if self._closed_tabs else None
         pop = TabListPopup(self, entries, empties, last is not None, os.path.basename(last["path"]) if last and last["path"] else (last["title"] if last else ""))

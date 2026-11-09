@@ -2,7 +2,7 @@
 middle-click to close, and the tab list popup (find, close empty tabs, close others, reopen)."""
 from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QTabBar,
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QSizePolicy, QTabBar,
                                QTabWidget, QToolButton, QVBoxLayout, QWidget)
 
 from . import theme
@@ -190,18 +190,33 @@ class TabCorner(QWidget):
         self.panelbtn.setIcon(theme.icon("minimap", theme.c("MUTED"), 18))
 
 
+class _ElidedLabel(QLabel):
+    """A label that shortens a long name with "..." instead of pushing the row wider."""
+
+    def __init__(self, text):
+        super().__init__(text)
+        self._full = text
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(10)
+
+    def resizeEvent(self, e):
+        self.setText(self.fontMetrics().elidedText(self._full, Qt.ElideMiddle, max(self.width(), 10)))
+        super().resizeEvent(e)
+
+
 class _Row(QWidget):
     closeClicked = Signal()
 
-    def __init__(self, name, markdown, meta, current):
+    def __init__(self, name, markdown, meta, current, tip=""):
         super().__init__()
+        self.setToolTip(tip or name)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 0, 6, 0)
         lay.setSpacing(10)
         ico = QLabel()
         ico.setPixmap(badge_icon(markdown).pixmap(16, 16))
         lay.addWidget(ico)
-        lab = QLabel(name)
+        lab = _ElidedLabel(name)
         f = lab.font()
         f.setBold(bool(current))
         lab.setFont(f)
@@ -257,12 +272,12 @@ class TabListPopup(QFrame):
         self.list.itemActivated.connect(lambda it: self._pick(it))
         self.list.itemClicked.connect(lambda it: self._pick(it))
         lay.addWidget(self.list)
-        for page, name, md, meta, cur in entries:
+        for page, name, md, meta, cur, *tip in entries:
             it = QListWidgetItem(self.list)
             it.setData(Qt.UserRole, page)
             it.setData(Qt.UserRole + 1, name.lower())
             it.setSizeHint(QSize(0, 34))
-            row = _Row(name, md, meta, cur)
+            row = _Row(name, md, meta, cur, tip[0] if tip else "")
             row.closeClicked.connect(lambda p=page: self._close(p))
             self.list.setItemWidget(it, row)
             if cur:
