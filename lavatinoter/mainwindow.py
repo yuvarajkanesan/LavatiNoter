@@ -789,7 +789,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         if not ed.format_supported():
             self.flash("Tables can be inserted in text, Markdown and HTML documents.")
             return
-        d = TableDialog(self, self.settings["table_style"] if "table_style" in self.settings else "markdown")
+        d = TableDialog(self, self.settings["table_style"] or "markdown")
         if d.exec() == QDialog.Accepted:
             cols, rows, header, style, aligns = d.values()
             self.settings["table_style"] = style

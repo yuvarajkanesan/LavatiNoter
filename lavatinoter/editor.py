@@ -1890,8 +1890,8 @@ class CodeEditor(QPlainTextEdit):
             return False
         if self.lang.name == "HTML / XML":
             names = [f"Column {i + 1}" for i in range(cols)]
-            body = "".join("  <tr>" + "<td></td>" * cols + "</tr>\n" for _ in range(rows))
-            text = "<table>\n  <tr>" + "".join(f"<th>{n}</th>" for n in names) + "</tr>\n" + body + "</table>\n"
+            body = "".join("  <tr>" + '<td style="height:40px"></td>' * cols + "</tr>\n" for _ in range(rows))
+            text = '<table border="1" cellspacing="0" cellpadding="10" width="100%" style="border-collapse:collapse;border-color:#888">\n  <tr>' + "".join(f"<th>{n}</th>" for n in names) + "</tr>\n" + body + "</table>\n"
         else:
             from . import tablemodel as tm
             model = tm.TableModel.blank(rows + (1 if header else 0), cols, header, aligns, style or "markdown")
