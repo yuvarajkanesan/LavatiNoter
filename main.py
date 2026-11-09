@@ -1099,7 +1099,7 @@ def selftest():
             return ft.with_extension(os.path.join(work, "saved_note"), current)
         win._ask_save_path = fake_dialog
         assert win.save_as(ed)
-        assert seen["filter"] == "Text files (*.txt)" and os.path.basename(seen["start"]).startswith("new ")
+        assert seen["filter"] == "Text files (*.txt)" and os.path.basename(seen["start"]).startswith("Untitled ")
         assert ed.path.endswith("saved_note.txt") and open(ed.path).read().strip() == "hello save"
         assert win.tab_title(ed) == "saved_note.txt"
         # a Python file offers Python again and Save keeps the format
@@ -1140,7 +1140,7 @@ def selftest():
         for name, flt in (("mynotes", "Text files (*.txt)"), ("script", "Python (*.py *.pyw)"), ("typed.js", "Text files (*.txt)"),
                           ("data", "All files (*.*)"), ("page", "HTML (*.html *.htm)")):
             drive(name, flt)
-            got[name] = os.path.basename(win._ask_save_path(os.path.join(d, "new 1"), "Text files (*.txt)"))
+            got[name] = os.path.basename(win._ask_save_path(os.path.join(d, "Untitled 1"), "Text files (*.txt)"))
         assert got == {"mynotes": "mynotes.txt", "script": "script.py", "typed.js": "typed.js", "data": "data.txt", "page": "page.html"}, got
 
     def t_startup_safety():

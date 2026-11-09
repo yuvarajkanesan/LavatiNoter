@@ -610,6 +610,26 @@ def _ic_hide(p):
     _poly(p, [(6.6, 6.6), (3, 12), (7.5, 17.5), (12, 18), (15, 17)])
 
 
+def _ic_eye(p):
+    p.drawArc(QRectF(2.5, 6, 19, 12), 0, 180 * 16)
+    p.drawArc(QRectF(2.5, 6, 19, 12), 180 * 16, 180 * 16)
+    p.drawEllipse(QRectF(9, 9, 6, 6))
+
+
+def _ic_expand(p):
+    _poly(p, [(14, 4), (20, 4), (20, 10)])
+    _poly(p, [(10, 20), (4, 20), (4, 14)])
+    p.drawLine(20, 4, 13.5, 10.5)
+    p.drawLine(4, 20, 10.5, 13.5)
+
+
+def _ic_sync(p):
+    p.drawLine(8, 5, 8, 19)
+    _poly(p, [(4.5, 8.5), (8, 5), (11.5, 8.5)])
+    p.drawLine(16, 5, 16, 19)
+    _poly(p, [(12.5, 15.5), (16, 19), (19.5, 15.5)])
+
+
 _ICONS = {n[4:]: f for n, f in globals().items() if n.startswith("_ic_")}
 
 
@@ -863,14 +883,15 @@ QToolButton {{ background: transparent; border: none; border-radius: 6px; paddin
 QToolButton:hover {{ background: {k['HOVER']}; }}
 QToolButton:pressed, QToolButton:checked {{ background: {k['SELECTED']}; }}
 QToolButton:disabled {{ opacity: 0.4; }}
-QStatusBar {{ background: {k['BG']}; color: {k['MUTED']}; border: none; padding: 0 8px 4px 8px; }}
+QStatusBar {{ background: {k['BG']}; color: {k['MUTED']}; border: none; border-top: 1px solid {k['BORDER']}; padding: 0 8px; min-height: 28px; }}
 QStatusBar::item {{ border: none; }}
-QStatusBar QLabel {{ padding: 3px 12px; color: {k['MUTED']}; }}
-QStatusBar QLabel[sep="true"] {{ background: {k['PANEL']}; border: 1px solid {k['BORDER']}; border-radius: 11px; padding: 2px 12px; margin: 2px 0 0 6px; }}
+QStatusBar QLabel {{ padding: 2px 8px; color: {k['MUTED']}; font-size: 12px; }}
+QStatusBar QLabel[sep="true"] {{ background: transparent; border: none; border-radius: 5px; padding: 3px 8px; margin: 0; }}
+QStatusBar QLabel[sep="true"]:hover {{ background: {k['HOVER']}; }}
 QTabWidget::pane {{ border: 1px solid {k['BORDER']}; border-radius: 10px; background: {k['EDITOR']}; margin: 0 12px 0 12px; top: -1px; }}
 QTabBar {{ background: {k['BG']}; qproperty-drawBase: 0; }}
-QTabBar::tab {{ background: transparent; color: {k['MUTED']}; padding: 9px 12px 9px 12px; border-top: 2px solid transparent;
-    border-top-left-radius: 10px; border-top-right-radius: 10px; margin-left: 4px; min-width: 60px; }}
+QTabBar::tab {{ background: transparent; color: {k['MUTED']}; padding: 5px 4px 5px 10px; border-top: 2px solid transparent;
+    border-top-left-radius: 8px; border-top-right-radius: 8px; margin-left: 2px; min-width: 70px; max-width: 220px; }}
 QTabBar::tab:hover {{ background: {k['HOVER']}; color: {k['TEXT']}; }}
 QTabBar::tab:selected {{ background: {k['EDITOR']}; color: {k['TEXT']}; border-top: 2px solid {k['ACCENT']}; border-left: 1px solid {k['BORDER']}; border-right: 1px solid {k['BORDER']}; }}
 QTabBar QToolButton {{ background: {k['BG']}; border: none; }}

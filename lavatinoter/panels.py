@@ -1,11 +1,14 @@
 """Side and bottom panels: workspace tree, minimap, function list, images, search results, console, document list."""
+import html as _html
 import math
 import os
+import re
 import subprocess
 import sys
+import tempfile
 
-from PySide6.QtCore import QDir, QFileInfo, QModelIndex, QPoint, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPen, QPixmap
+from PySide6.QtCore import QDir, QFileInfo, QModelIndex, QPoint, QRect, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QDesktopServices, QGuiApplication, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileIconProvider, QFileSystemModel, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QPushButton,
                                QScrollArea, QStyle, QStyledItemDelegate, QTabWidget, QTextBrowser, QToolButton, QTreeView, QTreeWidget,
@@ -252,6 +255,42 @@ class MinimapWidget(QWidget):
             self._scroll_to(e.position().y())
 
 
+def md_headings(text):
+    """[(level, title, line)] of the Markdown headings, ignoring # lines inside fenced code blocks."""
+    out, fence = [], False
+    for n, line in enumerate(text.split("\n"), 1):
+        t = line.lstrip()
+        if t.startswith("```") or t.startswith("~~~"):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        m = re.match(r"(#{1,6})\s+(.*?)\s*#*\s*$", line)
+        if m and m.group(2):
+            out.append((len(m.group(1)), m.group(2), n))
+    return out
+
+
+class _HeadingRow(QWidget):
+    def __init__(self, level, title, line):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6 + 14 * (level - 1), 0, 8, 0)
+        lay.setSpacing(8)
+        tag = QLabel(f"H{level}")
+        tag.setStyleSheet(f"color: {theme.c('FAINT')}; font-family: {theme.mono_family()}; font-size: 10px; background: transparent;")
+        tag.setFixedWidth(22)
+        name = QLabel(title)
+        name.setStyleSheet("background: transparent;")
+        num = QLabel(str(line))
+        num.setStyleSheet(f"color: {theme.c('FAINT')}; font-size: 12px; background: transparent;")
+        lay.addWidget(tag)
+        lay.addWidget(name, 1)
+        lay.addWidget(num)
+        for w in (tag, name, num):
+            w.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+
 class FunctionsPanel(QWidget):
     jump = Signal(int)
 
@@ -272,10 +311,24 @@ class FunctionsPanel(QWidget):
         self.note.setWordWrap(True)
         lay.addWidget(self.note)
         self.entries = []
+        self.count = 0
+        self.md = False
 
     def refresh(self, ed):
         self.entries = []
         self.list.clear()
+        self.count = 0
+        self.md = False
+        if ed is not None and not getattr(ed, "is_large", False) and ed.lang.name == "Markdown":
+            self.md = True
+            self.filter.setPlaceholderText("Filter headings...")
+            text = ed.toPlainText() if ed.length() < 2_000_000 else ""
+            self.entries = [(title, line, level) for level, title, line in md_headings(text)]
+            self.count = len(self.entries)
+            self._apply_filter()
+            self.note.setText("" if self.entries else "No outline: this document has no headings.")
+            return
+        self.filter.setPlaceholderText("Filter functions...")
         if ed is None or getattr(ed, "is_large", False) or ed.lang.funcs is None:
             self.note.setText("No function list for this document type." if ed is not None else "")
             return
@@ -289,14 +342,35 @@ class FunctionsPanel(QWidget):
             self.entries.append((name.strip()[:80], line, indent))
             if len(self.entries) > 3000:
                 break
+        self.count = len(self.entries)
         self._apply_filter()
         self.note.setText("" if self.entries else "No functions found.")
+
+    def set_caret(self, line):
+        """Highlights the heading whose section holds the caret."""
+        if not getattr(self, "md", False) or self.filter.text():
+            return
+        best = -1
+        for i, (_n, ln, _lv) in enumerate(self.entries):
+            if ln <= line:
+                best = i
+        if best >= 0 and self.list.currentRow() != best:
+            self.list.blockSignals(True)
+            self.list.setCurrentRow(best)
+            self.list.blockSignals(False)
 
     def _apply_filter(self):
         q = self.filter.text().lower()
         self.list.clear()
         for name, line, indent in self.entries:
             if q and q not in name.lower():
+                continue
+            if getattr(self, "md", False):
+                it = QListWidgetItem()
+                it.setData(Qt.UserRole, line)
+                it.setSizeHint(QSize(0, 30))
+                self.list.addItem(it)
+                self.list.setItemWidget(it, _HeadingRow(indent, name, line))
                 continue
             it = QListWidgetItem(("   " * min(indent // 4, 3)) + name)
             it.setData(Qt.UserRole, line)
@@ -591,10 +665,14 @@ class MarkdownPreview(QTextBrowser):
     """The formatted output of a document, whatever its type: Markdown and HTML rendered, formatted text (bold, colours, sizes) with
     its marks hidden, and code with its syntax colours on a white page."""
     MAX_CHARS = 400_000
+    FENCE = re.compile(r"^(```|~~~)[ \t]*mermaid[^\n]*\n(.*?)^\1[ \t]*$", re.S | re.M)
+    diagramsChanged = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setOpenExternalLinks(True)
+        self.diagrams = []
+        self.setOpenLinks(False)
+        self.anchorClicked.connect(self._link)
         self.setFrameShape(QFrame.NoFrame)
         self._last = None
         self._paper = False
@@ -605,9 +683,11 @@ class MarkdownPreview(QTextBrowser):
         f = QFont(theme.ui_family())
         f.setPixelSize(15)
         self.document().setDefaultFont(f)
+        self.document().setDocumentMargin(22)
         self.document().setDefaultStyleSheet(
             f"body {{ color: {c('TEXT')}; }} a {{ color: {c('ACCENT')}; }} "
-            f"h1, h2 {{ border-bottom: 1px solid {c('BORDER')}; }} "
+            f"h1 {{ font-size: 26px; font-weight: 600; margin-top: 18px; }} h2 {{ font-size: 21px; font-weight: 600; margin-top: 16px; }} "
+            f"h3 {{ font-size: 17px; font-weight: 600; }} h4 {{ font-size: 15px; font-weight: 600; }} h5, h6 {{ font-size: 12px; color: {c('MUTED')}; }} "
             f"code, pre {{ font-family: Consolas, monospace; background: {c('HOVER')}; }} "
             f"blockquote {{ color: {c('MUTED')}; }} th {{ background: {c('HOVER')}; }}")
         self._apply_paper()
@@ -617,6 +697,112 @@ class MarkdownPreview(QTextBrowser):
         c = theme.c
         bg, fg = ("#ffffff", "#1e1b33") if self._paper else (c("PANEL"), c("TEXT"))
         self.setStyleSheet(f"QTextBrowser {{ background: {bg}; color: {fg}; padding: 8px; }}")
+
+    @staticmethod
+    def _hard_breaks(text):
+        """A single line break inside a paragraph shows as a line break, like GitHub comments do."""
+        out, fence = [], False
+        lines = text.split("\n")
+        plain = re.compile(r"^\s*(#|```|~~~|\||>|[-*+] |\d+[.)] |-{3,}|\*{3,}|_{3,})")
+        for i, line in enumerate(lines):
+            if line.lstrip().startswith(("```", "~~~")):
+                fence = not fence
+                out.append(line)
+                continue
+            nxt = lines[i + 1] if i + 1 < len(lines) else ""
+            if (not fence and line.strip() and not line.endswith("  ") and not plain.match(line)
+                    and nxt.strip() and not plain.match(nxt)):
+                line += "  "
+            out.append(line)
+        return "\n".join(out)
+
+    def _diagram_placeholder(self, m):
+        self.diagrams.append(m.group(2))
+        n = len(self.diagrams)
+        return f"> **Diagram {n} (Mermaid)** - [Open in your browser](diagram:{n})\n"
+
+    def _link(self, url):
+        if url.scheme() == "diagram":
+            self.open_diagrams()
+        else:
+            QDesktopServices.openUrl(url)
+
+    def open_diagrams(self):
+        """Draws every Mermaid diagram of the document in the default browser, using the bundled mermaid.js (works offline)."""
+        if not self.diagrams:
+            return
+        js = QUrl.fromLocalFile(util.resource("assets", "mermaid.min.js")).toString()
+        blocks = "\n".join(f'<h3>Diagram {i}</h3><pre class="mermaid">{_html.escape(d)}</pre>' for i, d in enumerate(self.diagrams, 1))
+        page = (f'<!doctype html><meta charset="utf-8"><title>Diagrams</title><style>body{{font-family:Segoe UI,sans-serif;margin:32px;color:#1e1b33}}'
+                f'pre.mermaid{{background:#fff}}</style>{blocks}<script src="{js}"></script>'
+                f'<script>mermaid.initialize({{startOnLoad:true}});</script>')
+        path = os.path.join(tempfile.gettempdir(), "lavatinoter-diagrams.html")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(page)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def scroll_to_source_line(self, top_line, text):
+        """Scrolls so the rendered heading section matches the editor's first visible line (headings are the anchors)."""
+        heads = [ln for _lv, _t, ln in md_headings(text)]
+        ys = self._heading_ys()
+        if not heads or len(ys) != len(heads):
+            return
+        bar = self.verticalScrollBar()
+        if top_line <= heads[0]:
+            frac = top_line / max(heads[0], 1)
+            y = ys[0] * min(frac, 1.0)
+        else:
+            i = max(k for k, ln in enumerate(heads) if ln <= top_line)
+            if i + 1 < len(heads):
+                f = (top_line - heads[i]) / max(heads[i + 1] - heads[i], 1)
+                y = ys[i] + f * (ys[i + 1] - ys[i])
+            else:
+                total = max(text.count("\n") + 1 - heads[i], 1)
+                f = min((top_line - heads[i]) / total, 1.0)
+                y = ys[i] + f * (self.document().size().height() - ys[i])
+        bar.setValue(int(y))
+
+    def _heading_ys(self):
+        doc, out = self.document(), []
+        lay = doc.documentLayout()
+        b = doc.begin()
+        while b.isValid():
+            if b.blockFormat().headingLevel() > 0:
+                out.append(lay.blockBoundingRect(b).top())
+            b = b.next()
+        return out
+
+    def _decorate_rendered(self):
+        """Tables and code blocks of a rendered Markdown document: borders, padding, header shading, a tinted block for code."""
+        from PySide6.QtGui import QBrush, QTextCursor, QTextFormat, QTextTable, QTextLength
+        doc = self.document()
+        line, tint = QColor(theme.c("BORDER")), QColor(theme.c("HOVER"))
+        for fr in doc.rootFrame().childFrames():
+            if isinstance(fr, QTextTable):
+                fmt = fr.format()
+                fmt.setBorder(1)
+                fmt.setBorderBrush(QBrush(line))
+                fmt.setCellPadding(7)
+                fmt.setCellSpacing(0)
+                fmt.setTopMargin(8)
+                fmt.setBottomMargin(12)
+                fr.setFormat(fmt)
+                for c in range(fr.columns()):
+                    cell = fr.cellAt(0, c)
+                    cf = cell.format()
+                    cf.setBackground(QBrush(tint))
+                    cell.setFormat(cf)
+        cur = QTextCursor(doc)
+        b = doc.begin()
+        while b.isValid():
+            bf = b.blockFormat()
+            if bf.hasProperty(QTextFormat.BlockCodeFence) or bf.hasProperty(QTextFormat.BlockCodeLanguage):
+                bf.setBackground(QBrush(tint))
+                bf.setLeftMargin(10)
+                bf.setRightMargin(10)
+                cur.setPosition(b.position())
+                cur.setBlockFormat(bf)
+            b = b.next()
 
     def show_document(self, text, lang, folder=""):
         """Renders `text` by its language; re-renders only when something changed and keeps the scroll position."""
@@ -637,7 +823,10 @@ class MarkdownPreview(QTextBrowser):
         if len(text) > self.MAX_CHARS:
             self.setPlainText("This document is too large to preview.")
         elif lang.name == "Markdown":
-            self.document().setMarkdown(text)
+            self.diagrams = []
+            self.document().setMarkdown(self._hard_breaks(self.FENCE.sub(self._diagram_placeholder, text)))
+            self._decorate_rendered()
+            self.diagramsChanged.emit(bool(self.diagrams))
         elif lang.name == "HTML / XML":
             self.document().setHtml(text)
         elif lang.name in RICH_LANGS and richtext.has_marks(text):   # formatted plain text
@@ -649,7 +838,7 @@ class MarkdownPreview(QTextBrowser):
 
 
 class PreviewPanel(QWidget):
-    """The Preview tab: a slim header with a full-screen button above the rendered document."""
+    """The Preview tab. The panel header owns expand / hide; a slim bar shows only when the document has diagrams."""
     fullScreenRequested = Signal()
 
     def __init__(self, parent=None):
@@ -657,19 +846,17 @@ class PreviewPanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
+        self.diagram_btn = QToolButton()
+        self.diagram_btn.setText("Open diagrams in browser")
+        self.diagram_btn.hide()
         head = QHBoxLayout()
-        head.setContentsMargins(10, 6, 8, 6)
-        self.title = QLabel("Formatted output")
-        self.title.setProperty("muted", True)
-        head.addWidget(self.title)
+        head.setContentsMargins(12, 6, 8, 6)
         head.addStretch(1)
-        self.full = QToolButton()
-        self.full.setText("Full screen")
-        self.full.setToolTip("Show the formatted output full screen (F11, Esc to exit)")
-        self.full.clicked.connect(self.fullScreenRequested)
-        head.addWidget(self.full)
+        head.addWidget(self.diagram_btn)
         lay.addLayout(head)
         self.view = MarkdownPreview()
+        self.view.diagramsChanged.connect(self.diagram_btn.setVisible)
+        self.diagram_btn.clicked.connect(self.view.open_diagrams)
         lay.addWidget(self.view, 1)
 
     def restyle(self):

@@ -22,6 +22,7 @@ from . import search
 from .palette import Picker, fuzzy
 from .minitoolbar import FONTS, HIGHLIGHTS, SIZES_PT, TEXT_COLORS, _icon_with_bar
 from .popups import LineSpacingPopup, PopupButton
+from .tabbar import DocTabs, TabClose, TabCorner, TabListPopup, badge_icon
 from .panels import FunctionsPanel, ImagePreview, ImagesPanel, MinimapWidget, PreviewFullScreen, PreviewPanel, ResultsPanel, WorkspacePanel, reveal_in_explorer
 
 MB = 1024 * 1024
@@ -101,16 +102,15 @@ class PreferencesDialog(QDialog):
 
 
 class _PlusFollower(QObject):
-    """Keeps the new-tab button just after the last tab. When the tabs overflow (the scroll arrows appear) it moves into the tab
-    widget's corner instead, so Qt keeps the arrows clear of it."""
+    """Keeps the new-tab button just after the last tab. When the tabs overflow it moves into the corner beside the tab list button."""
 
-    def __init__(self, tabs, plus):
+    def __init__(self, tabs, plus, corner):
         super().__init__(tabs)
-        self.tabs, self.bar, self.plus, self._busy, self._corner = tabs, tabs.tabBar(), plus, False, False
+        self.tabs, self.bar, self.plus, self.corner, self._busy, self._corner = tabs, tabs.tabBar(), plus, corner, False, False
 
     def _overflowing(self):
-        used = sum(self.bar.tabSizeHint(i).width() for i in range(self.bar.count()))     # natural widths: they do not shrink when the bar does
-        room = self.tabs.width() - self.plus.sizeHint().width() - 12
+        used = sum(self.bar.tabSizeHint(i).width() for i in range(self.bar.count()))     # natural widths: they do not shrink with the bar
+        room = self.tabs.width() - self.corner.sizeHint().width() - self.plus.sizeHint().width() - 16
         return used > room + (30 if self._corner else 0)                                # a little slack so it cannot flip back and forth
 
     def place(self):
@@ -118,9 +118,9 @@ class _PlusFollower(QObject):
         if over != self._corner:
             self._corner = over
             if over:
-                self.tabs.setCornerWidget(self.plus, Qt.TopRightCorner)
+                self.corner.set_plus(self.plus)
             else:
-                self.tabs.setCornerWidget(None, Qt.TopRightCorner)
+                self.corner.set_plus(None)
                 self.plus.setParent(self.bar)
             self.plus.show()
         if over:
@@ -201,25 +201,32 @@ class MainWindow(FramelessMixin, QMainWindow):
         tl.addWidget(self._mb)
         self.setMenuWidget(top)
 
-        self.tabs = QTabWidget()
+        self.tabs = DocTabs()
         self.tabs.setDocumentMode(True)
         self.tabs.setMovable(True)
         self.tabs.setTabsClosable(False)
-        self.tabs.setElideMode(Qt.ElideRight)
+        self.tabs.setElideMode(Qt.ElideNone)                    # tabs keep their width and the strip scrolls instead
         self.tabs.currentChanged.connect(self._tab_changed)
         self.tabs.tabBar().tabMoved.connect(lambda *_: self.refresh_documents())
         self.tabs.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
         self.tabs.tabBar().customContextMenuRequested.connect(self._tab_menu)
         self.tabs.tabBar().tabBarDoubleClicked.connect(lambda i: self.new_file() if i < 0 else None)
         bar = self.tabs.tabBar()
-        plus = QToolButton(bar)                  # sits right after the last tab, not in the far corner
+        plus = QToolButton(bar)                  # sits right after the last tab, or in the corner when the tabs overflow
         plus.setIcon(theme.icon("plus", theme.c("MUTED"), 18))
         plus.setToolTip("New document (Ctrl+N)")
-        plus.clicked.connect(lambda _=False: self.new_file())
+        plus.clicked.connect(lambda _=False: self.new_file(after_current=True))
         self.plus = plus
-        self._plus_filter = _PlusFollower(self.tabs, plus)
+        self.corner = TabCorner()
+        self.tabs.setCornerWidget(self.corner, Qt.TopRightCorner)
+        self.corner.listbtn.clicked.connect(self.show_tab_list)
+        self.corner.panelbtn.clicked.connect(lambda: self.view_map.trigger())
+        bar.hide_arrows(keep=(plus,))
+        bar.middleClicked.connect(lambda i: self.close_tab(self.tabs.widget(i)))
+        self._plus_filter = _PlusFollower(self.tabs, plus, self.corner)
         bar.installEventFilter(self._plus_filter)
         self.tabs.installEventFilter(self._plus_filter)
+        self._closed_tabs = []
         self.main_split = QSplitter(Qt.Horizontal)
         self.main_split.setChildrenCollapsible(False)
         self.main_split.setHandleWidth(1)
@@ -300,16 +307,39 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.side.setObjectName("side")
         self.side.setDocumentMode(True)
         self.side.addTab(self.minimap, "Map")
-        self.side.addTab(self.functions, "Functions")
+        self.side.addTab(self.functions, "Outline")
         self.side.addTab(self.images, "Images")
         self.preview = PreviewPanel()
         self.preview.fullScreenRequested.connect(self.toggle_preview_fullscreen)
         self.preview_full = None
         self.side.addTab(self.preview, "Preview")
         self.side.currentChanged.connect(lambda _i: self._refresh_preview())
+        self.side.tabBar().setExpanding(False)
+        self.sync_scroll = True
+        self._panel_expanded = False
+        corner = QWidget()
+        cl = QHBoxLayout(corner)
+        cl.setContentsMargins(0, 4, 6, 0)
+        cl.setSpacing(2)
+        self.btn_sync = QToolButton()
+        self.btn_sync.setCheckable(True)
+        self.btn_sync.setChecked(True)
+        self.btn_sync.setToolTip("Sync scroll: the preview follows the editor, heading by heading")
+        self.btn_sync.toggled.connect(self._set_sync_scroll)
+        self.btn_expand = QToolButton()
+        self.btn_expand.setToolTip("Expand the panel to the whole work area (Esc to return)")
+        self.btn_expand.clicked.connect(self.toggle_panel_expand)
+        self.btn_hide = QToolButton()
+        self.btn_hide.setToolTip("Hide the panel")
+        self.btn_hide.clicked.connect(lambda: self.view_map.trigger() if self.map_dock.isVisible() else None)
+        for b in (self.btn_sync, self.btn_expand, self.btn_hide):
+            b.setCursor(Qt.PointingHandCursor)
+            cl.addWidget(b)
+        self.side.setCornerWidget(corner, Qt.TopRightCorner)
+        self.side_corner = corner
         self.map_dock = self._dock("Panels", self.side, Qt.RightDockWidgetArea, "side")
-        self.map_dock.setMinimumWidth(170)
-        self.resizeDocks([self.map_dock], [230], Qt.Horizontal)
+        self.map_dock.setMinimumWidth(300)
+        self.resizeDocks([self.map_dock], [470], Qt.Horizontal)
 
         self.results = ResultsPanel()
         self.results.openHit.connect(self.open_hit)
@@ -480,6 +510,8 @@ class MainWindow(FramelessMixin, QMainWindow):
                             "Suggests words from this document, the language's keywords and common English words while you type")
         self.a_lsp = A("Language Servers (LSP)...", self.edit_lsp, None, None, tip="Use an installed language server for go to definition, hover and error underlines")
         self.a_prefs = A("Preferences...", self.preferences, "Ctrl+,")
+        self.a_reopen_tab = A("Reopen Closed Tab", self.reopen_closed_tab, "Ctrl+Shift+T")
+        self.a_tab_list = A("Find an Open Tab...", self.show_tab_list, "Ctrl+Alt+T")
         self.a_next_tab = A("Next Tab", lambda: self.step_tab(1), "Ctrl+PgDown")
         self.a_prev_tab = A("Previous Tab", lambda: self.step_tab(-1), "Ctrl+PgUp")
         self.a_next_tab2 = A("Next Tab", lambda: self.step_tab(1), "Ctrl+Tab")
@@ -883,7 +915,14 @@ class MainWindow(FramelessMixin, QMainWindow):
         sb = self.statusBar()
         sb.setSizeGripEnabled(False)
         self.lbl_lang = QLabel("Plain text")
-        sb.addWidget(self.lbl_lang, 1)
+        self.lbl_lang.setProperty("sep", True)
+        sb.addWidget(self.lbl_lang)
+        self.lbl_save = QLabel("New file")
+        self.lbl_save.setProperty("sep", True)
+        self.lbl_save.setCursor(Qt.PointingHandCursor)
+        self.lbl_save.setToolTip("Click to save")
+        self.lbl_save.mousePressEvent = lambda e: self.save(self.current()) if self.current() is not None else None
+        sb.addWidget(self.lbl_save, 1)
 
         def lab(text=""):
             l = QLabel(text)
@@ -904,7 +943,14 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.lbl_enc.setCursor(Qt.PointingHandCursor)
         self.lbl_enc.mousePressEvent = lambda e: self._enc_popup()
         self.lbl_lang.setCursor(Qt.PointingHandCursor)
+        self.lbl_pos.setCursor(Qt.PointingHandCursor)
+        self.lbl_pos.mousePressEvent = lambda e: self.goto()
         self.lbl_lang.mousePressEvent = lambda e: self._lang_popup()
+        self.lbl_mode.setCursor(Qt.PointingHandCursor)
+        self.lbl_mode.setToolTip("Insert / Overwrite (Insert key)")
+        self.lbl_mode.mousePressEvent = lambda e: self._toggle_overwrite()
+        for lb in (self.lbl_lang, self.lbl_save, self.lbl_len, self.lbl_pos, self.lbl_eol, self.lbl_enc, self.lbl_mode):
+            lb.setAttribute(Qt.WA_Hover, True)
         self._ram_timer = QTimer(self, interval=3000)
         self._ram_timer.timeout.connect(self._update_ram)
 
@@ -915,12 +961,21 @@ class MainWindow(FramelessMixin, QMainWindow):
         QApplication.instance().setStyleSheet(theme.qss())
         k = theme.c
         self.side.setStyleSheet(
-            f"QTabWidget#side QTabBar::tab {{ border-top: 2px solid transparent; border-bottom: 2px solid transparent; "
-            f"border-right: none; padding: 9px 14px; min-width: 40px; background: transparent; }} "
-            f"QTabWidget#side QTabBar::tab:selected {{ border-bottom: 2px solid {k('ACCENT')}; background: transparent; color: {k('TEXT')}; }}")
+            f"QTabWidget#side QTabBar {{ background: transparent; }} "
+            f"QTabWidget#side QTabBar::tab {{ border: 1px solid transparent; border-radius: 7px; margin: 6px 1px 6px 1px; padding: 4px 7px; "
+            f"background: transparent; color: {k('MUTED')}; min-width: 0px; }} "
+            f"QTabWidget#side QTabBar::tab:hover {{ color: {k('TEXT')}; }} "
+            f"QTabWidget#side QTabBar::tab:selected {{ background: {k('PANEL')}; border: 1px solid {k('BORDER')}; color: {k('TEXT')}; }} "
+            f"QTabWidget#side::pane {{ border: none; border-top: 1px solid {k('BORDER')}; border-radius: 0; margin: 0; }}")
+        for i, ic in enumerate(("map", "list", "image", "eye")):
+            self.side.setTabIcon(i, theme.icon(ic, k("MUTED"), 16))
+        self.btn_sync.setIcon(theme.icon("sync", k("ACCENT") if self.btn_sync.isChecked() else k("MUTED"), 18))
+        self.btn_expand.setIcon(theme.icon("expand", k("MUTED"), 18))
+        self.btn_hide.setIcon(theme.icon("close", k("MUTED"), 18))
         for a, icon in self._icon_actions:
             a.setIcon(theme.icon(icon, k("MUTED")))
         self.plus.setIcon(theme.icon("plus", k("MUTED"), 18))
+        self.corner.restyle()
         for b, icon, attr in getattr(self, "_fmt_icons", []):
             b.setIcon(_icon_with_bar(icon, self._fmt_colors[attr]) if attr else theme.icon(icon, k("TEXT"), 20))
         for b in getattr(self, "_popup_buttons", []):
@@ -973,12 +1028,21 @@ class MainWindow(FramelessMixin, QMainWindow):
     def modified_paths(self):
         return {os.path.normcase(p.path) for p in self.all_tabs() if p.path and self._modified(p)}
 
+    def _tab_badge(self, page):
+        """The MD badge for Markdown documents, a small document for the rest; only redrawn when the kind changes."""
+        i = self.tabs.indexOf(page)
+        is_md = (not page.is_large) and page.lang.name == "Markdown"
+        if i >= 0 and getattr(page, "_badge_md", None) != is_md:
+            page._badge_md = is_md
+            self.tabs.setTabIcon(i, badge_icon(is_md))
+
     def _decorate_tab(self, page):
         i = self.tabs.indexOf(page)
         if i < 0:
             return
         mod = self._modified(page)
-        self.tabs.setTabIcon(i, theme.dot_icon(theme.c("RED") if mod else theme.c("FAINT"), 10))
+        page._badge_md = None
+        self._tab_badge(page)
         self.tabs.setTabText(i, self.tab_title(page))
         self.tabs.setTabToolTip(i, page.path or page.title)
         box = QWidget()
@@ -990,19 +1054,14 @@ class MainWindow(FramelessMixin, QMainWindow):
             badge.setStyleSheet(f"background: {theme.c('ACCENT_BG')}; color: {theme.c('ACCENT')}; border-radius: 8px; "
                                 f"padding: 1px 7px; font-size: 11px; font-weight: 600;")
             hl.addWidget(badge)
-        close = QToolButton()
-        close.setIcon(theme.icon("close", theme.c("MUTED"), 14))
-        close.setIconSize(QSize(12, 12))
-        close.setAutoRaise(True)
-        close.setToolTip("Close (Ctrl+W)")
+        bar = self.tabs.tabBar()
+        close = TabClose(bar, lambda p=page: (self._modified(p), self.tabs.currentWidget() is p, bar.hover == self.tabs.indexOf(p)))
         close.clicked.connect(lambda _=False, p=page: self.close_tab(p))
-        close.setStyleSheet(f"QToolButton {{ background: transparent; border: none; padding: 3px; border-radius: 6px; }} "
-                            f"QToolButton:hover {{ background: {theme.c('SELECTED')}; }}")
         hl.addWidget(close)
         self.tabs.tabBar().setTabButton(i, QTabBar.RightSide, box)
 
-    def _add_page(self, page, activate=True):
-        i = self.tabs.addTab(page, "")
+    def _add_page(self, page, activate=True, after_current=False):
+        i = self.tabs.insertTab(self.tabs.currentIndex() + 1, page, "") if after_current and self.tabs.count() else self.tabs.addTab(page, "")
         self._decorate_tab(page)
         if activate:
             self.tabs.setCurrentIndex(i)
@@ -1028,6 +1087,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         ed.filesDropped.connect(self.open_paths)
         self.wire_editor(ed)
         ed.cursorStatus.connect(self._update_status)
+        ed.verticalScrollBar().valueChanged.connect(lambda _v: self._sync_preview_scroll())
         ed.document().modificationChanged.connect(lambda _=False, p=ed: self._modification_changed(p))
         ed.document().contentsChanged.connect(self._content_timer.start)
         ed.imagePasted.connect(self._image_pasted)
@@ -1061,17 +1121,18 @@ class MainWindow(FramelessMixin, QMainWindow):
         self._decorate_tab(page)
         if page is self.current():
             self._update_title()
+            self._update_status()
 
-    def new_file(self, text="", title=None, language=None):
+    def new_file(self, text="", title=None, language=None, after_current=False):
         self._untitled += 1
         ed = self._make_editor()
-        ed.title = title or f"new {self._untitled}"
+        ed.title = title or f"Untitled {self._untitled}"
         ed.lang_auto = language is None
         ed.setPlainText(text)
         ed.document().setModified(bool(text) and title is not None)
         if language:
             ed.set_language(language)
-        self._add_page(ed)
+        self._add_page(ed, after_current=after_current)
         ed.setFocus()
         return ed
 
@@ -1100,6 +1161,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         if st is not None and page.path:
             st[0].close_doc(lsp.path_to_uri(page.path))
         i = self.tabs.indexOf(page)
+        self._remember_closed(page, i)
         self.tabs.removeTab(i)
         if page.is_large:
             page.close_file()
@@ -1108,6 +1170,52 @@ class MainWindow(FramelessMixin, QMainWindow):
             self.new_file()
         self.refresh_documents()
         return True
+
+    # ---- closed tabs, the tab list ------------------------------------------------------------------------------------------
+    def _is_empty_untitled(self, page):
+        return not page.path and not page.is_large and not page.toPlainText()
+
+    def _remember_closed(self, page, index):
+        if page.is_large or self._is_empty_untitled(page):
+            return
+        self._closed_tabs.append({"path": page.path, "title": page.title, "text": page.toPlainText(), "lang": page.lang,
+                                  "pos": page.textCursor().position(), "index": index, "modified": page.document().isModified()})
+        del self._closed_tabs[:-20]
+
+    def reopen_closed_tab(self):
+        if not self._closed_tabs:
+            self.flash("No closed tab to reopen.")
+            return
+        d = self._closed_tabs.pop()
+        if d["path"] and os.path.exists(d["path"]) and not d["modified"]:
+            self.open_paths([d["path"]])
+            ed = self.editor_of(self.current())
+        else:
+            ed = self.new_file(d["text"], d["title"], d["lang"])
+            ed.document().setModified(d["modified"])
+        c = ed.textCursor()
+        c.setPosition(min(d["pos"], len(ed.toPlainText())))
+        ed.setTextCursor(c)
+        ed.centerCursor()
+
+    def show_tab_list(self):
+        pages = self.all_tabs()
+        cur = self.current()
+        entries = []
+        for p in pages:
+            meta = "unsaved" if self._modified(p) else ("empty" if self._is_empty_untitled(p) else "")
+            md = (not p.is_large) and p.lang.name == "Markdown"
+            entries.append((p, self.tab_title(p), md, meta, p is cur))
+        empties = sum(1 for p in pages if self._is_empty_untitled(p) and p is not cur)
+        last = self._closed_tabs[-1] if self._closed_tabs else None
+        pop = TabListPopup(self, entries, empties, last is not None, os.path.basename(last["path"]) if last and last["path"] else (last["title"] if last else ""))
+        pop.chosen.connect(lambda p: self.tabs.setCurrentWidget(p))
+        pop.closeTab.connect(lambda p: self.close_tab(p))
+        pop.closeEmpty.connect(lambda: [self.close_tab(p, force=True) for p in self.all_tabs() if self._is_empty_untitled(p) and p is not self.current()])
+        pop.closeOthers.connect(lambda: [self.close_tab(p) for p in self.all_tabs() if p is not self.current()])
+        pop.reopen.connect(self.reopen_closed_tab)
+        self._tab_pop = pop
+        pop.show_under(self.corner.listbtn)
 
     def close_all(self):
         for page in list(self.all_tabs()):
@@ -1139,6 +1247,7 @@ class MainWindow(FramelessMixin, QMainWindow):
 
     def refresh_documents(self):
         self._autosave.start()
+        self.corner.set_count(self.tabs.count())
         if not self._restoring:
             self._docs_timer.start()
 
@@ -1197,7 +1306,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         if page is None:
             return None
         if blank is not None and blank is not page:
-            self.close_tab(blank, force=True)               # the empty "new 1" tab makes way for the first file
+            self.close_tab(blank, force=True)               # the empty "Untitled 1" tab makes way for the first file
         self.settings.add_recent(path)
         if line:
             self._jump_line(line)
@@ -1356,6 +1465,8 @@ class MainWindow(FramelessMixin, QMainWindow):
     def _fill_window_menu(self):
         m = self.window_menu
         m.clear()
+        m.addAction(self.a_tab_list)
+        m.addAction(self.a_reopen_tab)
         m.addAction(self.a_next_tab)
         m.addAction(self.a_prev_tab)
         m.addSeparator()
@@ -2827,6 +2938,40 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.resizeDocks([self.map_dock], [max(420, int(self.width() * 0.45))], Qt.Horizontal)
         self._refresh_preview()
 
+    def _set_sync_scroll(self, on):
+        self.sync_scroll = on
+        self.btn_sync.setIcon(theme.icon("sync", theme.c("ACCENT") if on else theme.c("MUTED"), 18))
+        if on:
+            self._sync_preview_scroll()
+
+    def toggle_panel_expand(self):
+        """The panel takes the whole work area; Esc (or the same button) returns to the split view."""
+        if not self._panel_expanded:
+            self._panel_width = self.map_dock.width()
+            self.tabs.hide()
+            self._panel_expanded = True
+        else:
+            self.tabs.show()
+            self.resizeDocks([self.map_dock], [self._panel_width], Qt.Horizontal)
+            self._panel_expanded = False
+        self.btn_expand.setToolTip("Back to the split view (Esc)" if self._panel_expanded else "Expand the panel to the whole work area (Esc to return)")
+
+    def _sync_preview_scroll(self):
+        """Lines the preview up with the editor: find the heading at or above the editor's first visible line and interpolate
+        between it and the next heading, so matching sections stay side by side."""
+        if not self.sync_scroll or not self._preview_showing():
+            return
+        ed = self.editor_of(self.current())
+        if ed is None or self.current().is_large or ed.lang.name != "Markdown":
+            return
+        self.preview.view.scroll_to_source_line(ed.firstVisibleBlock().blockNumber() + 1, ed.toPlainText())
+
+    def _update_side_counts(self):
+        n = self.functions.count
+        self.side.setTabText(1, f"Outline  {n}" if n else "Outline")
+        m = self.images.list.count()
+        self.side.setTabText(2, f"Images  {m}" if m else "Images")
+
     def _preview_source(self):
         """(text, language, folder) of the current document, or None when there is nothing to show."""
         page = self.current()
@@ -2859,6 +3004,12 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.preview_full.view.restyle()
         self.preview_full.view.show_document(*src)
         self.preview_full.showFullScreen()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape and self._panel_expanded:
+            self.toggle_panel_expand()
+            return
+        super().keyPressEvent(e)
 
     def toggle_workspace(self, on):
         self.settings["show_workspace"] = on
@@ -2968,11 +3119,14 @@ class MainWindow(FramelessMixin, QMainWindow):
     def _content_settled(self):
         self._autosave.start()
         self._auto_detect(self.current())
+        if self.current() is not None:
+            self._tab_badge(self.current())
         self._lsp_sync(self.current())
         self._git_marks_timer.start()
         ed = self.editor_of(self.current())
         self.functions.refresh(ed)
         self.images.refresh(ed)
+        self._update_side_counts()
         self._refresh_preview()
         self._update_status()
 
@@ -2980,8 +3134,11 @@ class MainWindow(FramelessMixin, QMainWindow):
         page = self.current()
         ed = self.editor_of(page)
         self.minimap.set_editor(ed if page is not None and not page.is_large else None)
+        if page is not None:
+            self._tab_badge(page)
         self.functions.refresh(ed)
         self.images.refresh(ed)
+        self._update_side_counts()
         self._refresh_preview()
         self._update_status()
         self._update_title()
@@ -3001,6 +3158,12 @@ class MainWindow(FramelessMixin, QMainWindow):
         loc = os.path.dirname(page.path) if page.path else ""
         star = "*" if self._modified(page) else ""
         self.setWindowTitle(f"{star}{self.tab_title(page)}" + (f" — {os.path.normpath(loc)}" if loc else "") + f" — {APP_NAME}")
+
+    def _toggle_overwrite(self):
+        ed = self.editor_of(self.current())
+        if ed is not None and not self.current().is_large:
+            ed.setOverwriteMode(not ed.overwriteMode())
+            self._update_status()
 
     def _update_status(self):
         page = self.current()
@@ -3022,13 +3185,24 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.lbl_ram.hide()
         cur = page.textCursor()
         sel_chars, sel_lines = page.selection_info()
-        self.lbl_lang.setText(f"{page.lang.name} file" if page.lang is not PLAIN else "Normal text file")
-        self.lbl_len.setText(f"length : {page.length():,}   lines : {page.blockCount():,}")
-        self.lbl_pos.setText(f"Ln : {cur.blockNumber() + 1:,}   Col : {cur.positionInBlock() + 1}   Sel : {sel_chars} | {sel_lines}"
+        self.lbl_lang.setText(page.lang.name)
+        self.functions.set_caret(cur.blockNumber() + 1)
+        n_lines = page.blockCount()
+        self.lbl_len.setText(f"{page.length():,} chars \u00b7 {n_lines:,} {'line' if n_lines == 1 else 'lines'}")
+        self.lbl_pos.setText(f"Ln {cur.blockNumber() + 1:,}, Col {cur.positionInBlock() + 1}"
+                             + (f"  ({sel_chars:,} selected)" if sel_chars else "")
                              + (f"   {len(page.extra_cursors) + 1} cursors" if page.extra_cursors else ""))
-        self.lbl_eol.setText({"\r\n": "Windows (CR LF)", "\n": "Unix (LF)", "\r": "Old Mac (CR)"}[page.eol])
+        self.lbl_eol.setText({"\r\n": "CRLF", "\n": "LF", "\r": "CR"}[page.eol])
         self.lbl_enc.setText(page.encoding.replace("UTF-8 with BOM", "UTF-8 BOM"))
-        self.lbl_mode.setText("OVR" if page.overwriteMode() else "INS")
+        over = page.overwriteMode()
+        self.lbl_mode.setText("OVR" if over else "INS")
+        self.lbl_mode.setStyleSheet(f"color: {theme.c('ORANGE')}; font-weight: 600;" if over else "")
+        if self._modified(page):
+            self.lbl_save.setText("Unsaved")
+            self.lbl_save.setStyleSheet(f"color: {theme.c('ORANGE')};")
+        else:
+            self.lbl_save.setText("Saved" if page.path else "New file")
+            self.lbl_save.setStyleSheet(f"color: {theme.c('MUTED') if page.path else theme.c('FAINT')};")
         a = self.lang_actions.get(page.lang.name)
         if a:
             a.setChecked(True)
@@ -3079,7 +3253,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         try:
             if "text" in entry:
                 ed = self._make_editor()
-                ed.title = entry.get("title") or f"new {self._untitled + 1}"
+                ed.title = entry.get("title") or f"Untitled {self._untitled + 1}"
                 ed.path = p if p and os.path.isfile(p) else None
                 ed.encoding = entry.get("encoding", "UTF-8")
                 ed.eol = entry.get("eol", "\r\n")
@@ -3089,12 +3263,12 @@ class MainWindow(FramelessMixin, QMainWindow):
                 else:
                     ed.set_language(lang_by_name(entry.get("lang", "Plain text")))
                 ed.setPlainText(entry["text"])
-                # unsaved "new N" text shows as modified, like Notepad++
+                # unsaved "Untitled N" text shows as modified, like Notepad++
                 ed.document().setModified(bool(entry.get("modified", True)) or not ed.path)
                 if ed.path:
                     ed.mtime = os.path.getmtime(ed.path)
                 page = self._add_page(ed, activate=False)
-            elif not p and entry.get("title"):                          # an empty "new N" tab
+            elif not p and entry.get("title"):                          # an empty "Untitled N" tab
                 ed = self._make_editor()
                 ed.title = entry["title"]
                 ed.encoding = entry.get("encoding", "UTF-8")

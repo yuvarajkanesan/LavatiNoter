@@ -5,8 +5,8 @@ import os
 import re
 import time
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QStringListModel, Qt, QTimer, Signal
-from PySide6.QtGui import (QIcon, QGuiApplication, QAction, QColor, QPen, QFont, QFontMetricsF, QImage, QPainter, QPalette, QPixmap, QTextCharFormat, QTextCursor, QTextFormat,
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, QStringListModel, Qt, QTimer, Signal
+from PySide6.QtGui import (QIcon, QGuiApplication, QAction, QColor, QPen, QFont, QFontMetrics, QFontMetricsF, QImage, QPainter, QPalette, QPixmap, QTextCharFormat, QTextCursor, QTextFormat,
                            QTextOption, QTextBlockUserData)
 from PySide6.QtWidgets import (QApplication, QCompleter, QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QTextEdit, QToolButton, QToolTip, QVBoxLayout, QWidget,
                                QWidgetAction)
@@ -2928,6 +2928,39 @@ class CodeEditor(QPlainTextEdit):
             out.append(sel)
         return out
 
+    HINTS = (("Open a file", "Ctrl+O"), ("Reopen closed tab", "Ctrl+Shift+T"), ("Find an open tab", "Ctrl+Alt+T"))
+
+    def _paint_empty_hint(self):
+        """An empty document says so: a faint prompt on line 1 and the three shortcuts worth knowing, gone with the first character."""
+        if self.document().characterCount() > 1 or self.isReadOnly():
+            return
+        r = self.cursorRect(QTextCursor(self.document().firstBlock()))
+        p = QPainter(self.viewport())
+        p.setRenderHint(QPainter.Antialiasing)
+        faint = QColor(theme.c("FAINT"))
+        p.setPen(faint)
+        p.setFont(self.font())
+        x, y = r.left() + 4, r.top()
+        p.drawText(x, y + r.height() - 5, "Start typing…")
+        f = QFont(self.font())
+        f.setPixelSize(max(11, int(f.pointSizeF() * 1.25) if f.pointSizeF() > 0 else 13))
+        p.setFont(f)
+        fm = QFontMetrics(f)
+        y += r.height() + 18
+        for label, keys in self.HINTS:
+            p.setPen(faint)
+            p.drawText(x, y + fm.ascent(), label)
+            kx = x + 190
+            w = fm.horizontalAdvance(keys) + 14
+            box = QRectF(kx, y - 1, w, fm.height() + 4)
+            p.setPen(QPen(QColor(theme.c("BORDER")), 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(box, 5, 5)
+            p.setPen(faint)
+            p.drawText(box, Qt.AlignCenter, keys)
+            y += fm.height() + 14
+        p.end()
+
     def paintEvent(self, e):
         super().paintEvent(e)
         self._paint_indent_guides()
@@ -2935,6 +2968,7 @@ class CodeEditor(QPlainTextEdit):
         self._paint_borders()
         self._cover_selected_marks()
         self._paint_extra_carets()
+        self._paint_empty_hint()
         previews = self._visible_previews()
         self._preview_rects = []
         if not previews:
