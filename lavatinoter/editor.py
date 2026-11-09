@@ -906,6 +906,9 @@ class CodeEditor(QPlainTextEdit):
         if self.macro_rec is not None and not self.macro_playing and e.key() not in (Qt.Key_Shift, Qt.Key_Control, Qt.Key_Alt, Qt.Key_Meta):
             self.macro_rec.append(("key", int(e.key()), int(e.modifiers().value if hasattr(e.modifiers(), 'value') else e.modifiers()), e.text()))
         self._key_press(e)
+        if self._table_timer.isActive():                    # re-pad before the next paint so the borders never zigzag while typing
+            self._table_timer.stop()
+            self._auto_repad()
         self._maybe_complete(e)
 
     def _key_press(self, e):
@@ -1979,6 +1982,51 @@ class CodeEditor(QPlainTextEdit):
                 if b.text().startswith('<p style="'):
                     self.highlighter.rehighlightBlock(b)
                 b = b.next()
+
+    _BOX = {"┌": "rd", "┬": "lrd", "┐": "ld", "├": "udr", "┼": "ludr", "┤": "udl", "└": "ur",
+            "┴": "lur", "┘": "ul", "│": "ud", "─": "lr"}
+
+    def _paint_table_lines(self):
+        """Draws the box-drawing borders of Unicode tables as unbroken lines (font glyphs leave gaps between lines)."""
+        if not self._tables_on():
+            return
+        block = self.firstVisibleBlock()
+        bottom = self.viewport().height()
+        p = None
+        while block.isValid():
+            geo = self.blockBoundingGeometry(block).translated(self.contentOffset())
+            if geo.top() > bottom:
+                break
+            text = block.text()
+            if text[:1] in "┌├└│" and block.isVisible():
+                if p is None:
+                    p = QPainter(self.viewport())
+                    col = QColor(self.palette().color(QPalette.Text))
+                    col.setAlpha(190)
+                    p.setPen(QPen(col, 1))
+                line = block.layout().lineAt(0)
+                top, bot = geo.top(), geo.top() + max(line.height(), 1)
+                cy = round((top + bot) / 2)
+                u16 = 0
+                for ch in text:
+                    n = 2 if ord(ch) > 0xFFFF else 1
+                    sides = self._BOX.get(ch)
+                    if sides:
+                        x0 = geo.left() + line.cursorToX(u16)[0]
+                        x1 = geo.left() + line.cursorToX(u16 + n)[0]
+                        cx = round((x0 + x1) / 2)
+                        if "u" in sides:
+                            p.drawLine(cx, round(top), cx, cy)
+                        if "d" in sides:
+                            p.drawLine(cx, cy, cx, round(bot))
+                        if "l" in sides:
+                            p.drawLine(round(x0), cy, cx, cy)
+                        if "r" in sides:
+                            p.drawLine(cx, cy, round(x1), cy)
+                    u16 += n
+            block = block.next()
+        if p is not None:
+            p.end()
 
     def _paint_borders(self):
         if not self._has_para:
@@ -3289,6 +3337,7 @@ class CodeEditor(QPlainTextEdit):
         self._paint_indent_guides()
         self._paint_fold_pills()
         self._paint_borders()
+        self._paint_table_lines()
         self._cover_selected_marks()
         self._paint_extra_carets()
         self._paint_empty_hint()
