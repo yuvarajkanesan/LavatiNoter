@@ -8,7 +8,7 @@ from PySide6.QtCore import QDir, QFileInfo, QModelIndex, QPoint, QRect, QSize, Q
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileIconProvider, QFileSystemModel, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QPushButton,
-                               QScrollArea, QStyle, QStyledItemDelegate, QTabWidget, QToolButton, QTreeView, QTreeWidget,
+                               QScrollArea, QStyle, QStyledItemDelegate, QTabWidget, QTextBrowser, QToolButton, QTreeView, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from . import theme, util
@@ -585,3 +585,127 @@ class ResultsPanel(QWidget):
                 self.docs.setCurrentItem(it)
         for c in range(4):
             self.docs.resizeColumnToContents(c)
+
+
+class MarkdownPreview(QTextBrowser):
+    """The formatted output of a document, whatever its type: Markdown and HTML rendered, formatted text (bold, colours, sizes) with
+    its marks hidden, and code with its syntax colours on a white page."""
+    MAX_CHARS = 400_000
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setOpenExternalLinks(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self._last = None
+        self._paper = False
+        self.restyle()
+
+    def restyle(self):
+        c = theme.c
+        f = QFont(theme.ui_family())
+        f.setPixelSize(15)
+        self.document().setDefaultFont(f)
+        self.document().setDefaultStyleSheet(
+            f"body {{ color: {c('TEXT')}; }} a {{ color: {c('ACCENT')}; }} "
+            f"h1, h2 {{ border-bottom: 1px solid {c('BORDER')}; }} "
+            f"code, pre {{ font-family: Consolas, monospace; background: {c('HOVER')}; }} "
+            f"blockquote {{ color: {c('MUTED')}; }} th {{ background: {c('HOVER')}; }}")
+        self._apply_paper()
+        self._last = None
+
+    def _apply_paper(self):
+        c = theme.c
+        bg, fg = ("#ffffff", "#1e1b33") if self._paper else (c("PANEL"), c("TEXT"))
+        self.setStyleSheet(f"QTextBrowser {{ background: {bg}; color: {fg}; padding: 8px; }}")
+
+    def show_document(self, text, lang, folder=""):
+        """Renders `text` by its language; re-renders only when something changed and keeps the scroll position."""
+        from . import richtext
+        from .highlighter import PLAIN, RICH_LANGS
+        lang = lang or PLAIN
+        key = (text, lang.name, folder)
+        if key == self._last:
+            return
+        self._last = key
+        paper = lang.name != "Markdown"                             # Markdown follows the theme; everything else is a white page
+        if paper != self._paper:
+            self._paper = paper
+            self._apply_paper()
+        self.setSearchPaths([folder] if folder else [])
+        bar = self.verticalScrollBar()
+        pos = bar.value()
+        if len(text) > self.MAX_CHARS:
+            self.setPlainText("This document is too large to preview.")
+        elif lang.name == "Markdown":
+            self.document().setMarkdown(text)
+        elif lang.name == "HTML / XML":
+            self.document().setHtml(text)
+        elif lang.name in RICH_LANGS and richtext.has_marks(text):   # formatted plain text
+            self.document().setHtml(f'<div style="color:#1e1b33">{richtext.marks_to_html(text)}</div>')
+        else:                                                       # code, logs, config: the syntax colours, ready to read
+            from .export import styled_document
+            self.document().setHtml(styled_document(text, lang, 11).toHtml())
+        bar.setValue(pos)
+
+
+class PreviewPanel(QWidget):
+    """The Preview tab: a slim header with a full-screen button above the rendered document."""
+    fullScreenRequested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        head = QHBoxLayout()
+        head.setContentsMargins(10, 6, 8, 6)
+        self.title = QLabel("Formatted output")
+        self.title.setProperty("muted", True)
+        head.addWidget(self.title)
+        head.addStretch(1)
+        self.full = QToolButton()
+        self.full.setText("Full screen")
+        self.full.setToolTip("Show the formatted output full screen (F11, Esc to exit)")
+        self.full.clicked.connect(self.fullScreenRequested)
+        head.addWidget(self.full)
+        lay.addLayout(head)
+        self.view = MarkdownPreview()
+        lay.addWidget(self.view, 1)
+
+    def restyle(self):
+        self.view.restyle()
+
+
+class PreviewFullScreen(QWidget):
+    """The formatted output filling the screen. Esc, F11 or the Exit button brings you back."""
+    closed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.Window)
+        self.setWindowTitle("Formatted output")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        head = QHBoxLayout()
+        head.setContentsMargins(16, 8, 12, 8)
+        hint = QLabel("Formatted output")
+        hint.setProperty("muted", True)
+        head.addWidget(hint)
+        head.addStretch(1)
+        self.exit = QToolButton()
+        self.exit.setText("Exit full screen (Esc)")
+        self.exit.clicked.connect(self.close)
+        head.addWidget(self.exit)
+        lay.addLayout(head)
+        self.view = MarkdownPreview()
+        lay.addWidget(self.view, 1)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape or e.key() == Qt.Key_F11:
+            self.close()
+        else:
+            super().keyPressEvent(e)
+
+    def closeEvent(self, e):
+        super().closeEvent(e)
+        self.closed.emit()

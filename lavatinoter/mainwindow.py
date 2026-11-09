@@ -22,7 +22,7 @@ from . import search
 from .palette import Picker, fuzzy
 from .minitoolbar import FONTS, HIGHLIGHTS, SIZES_PT, TEXT_COLORS, _icon_with_bar
 from .popups import LineSpacingPopup, PopupButton
-from .panels import FunctionsPanel, ImagePreview, ImagesPanel, MinimapWidget, ResultsPanel, WorkspacePanel, reveal_in_explorer
+from .panels import FunctionsPanel, ImagePreview, ImagesPanel, MinimapWidget, PreviewFullScreen, PreviewPanel, ResultsPanel, WorkspacePanel, reveal_in_explorer
 
 MB = 1024 * 1024
 
@@ -284,6 +284,11 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.side.addTab(self.minimap, "Map")
         self.side.addTab(self.functions, "Functions")
         self.side.addTab(self.images, "Images")
+        self.preview = PreviewPanel()
+        self.preview.fullScreenRequested.connect(self.toggle_preview_fullscreen)
+        self.preview_full = None
+        self.side.addTab(self.preview, "Preview")
+        self.side.currentChanged.connect(lambda _i: self._refresh_preview())
         self.map_dock = self._dock("Panels", self.side, Qt.RightDockWidgetArea, "side")
         self.map_dock.setMinimumWidth(170)
         self.resizeDocks([self.map_dock], [230], Qt.Horizontal)
@@ -425,7 +430,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.a_view_para = A("Paragraph Toolbar", self.toggle_para_toolbar, None, None, True, True)
         self.a_find = A("Find...", lambda: self.find_dialog.show_tab(0, self._selected_text()), S.Find, "find", tip="Find (Ctrl+F)")
         self.a_replace = A("Replace...", lambda: self.find_dialog.show_tab(1, self._selected_text()), "Ctrl+H", "replace", tip="Replace (Ctrl+H)")
-        self.a_find_files = A("Find in Files...", lambda: self.find_dialog.show_tab(2, self._selected_text()), "Ctrl+Shift+F")
+        self.a_find_files = A("Find in Files...", lambda: self.find_dialog.show_tab(2, self._selected_text()), "Ctrl+Alt+F")
         self.a_mark = A("Mark...", lambda: self.find_dialog.show_tab(3, self._selected_text()), "Ctrl+M")
         self.a_find_next = A("Find Next", lambda: self._find_step(False), "F3")
         self.a_find_prev = A("Find Previous", lambda: self._find_step(True), "Shift+F3")
@@ -439,6 +444,10 @@ class MainWindow(FramelessMixin, QMainWindow):
                          "Show whitespace and tabs")
         self.view_map = A("Panels on the Right (Map, Functions, Images)", self.toggle_map, None, "minimap", True, self.settings["show_minimap"],
                           "Map, functions and images")
+        self.a_md_preview = A("Preview Formatted Output", self.show_markdown_preview, "Ctrl+Shift+F", None,
+                              tip="Shows the formatted output of the document: Markdown, HTML, formatted text, or code with its colours (Ctrl+Shift+F)")
+        self.a_preview_full = A("Preview Full Screen", self.toggle_preview_fullscreen, None, None,
+                                tip="The formatted output full screen: F11 while the Preview tab is showing; Esc or F11 exits")
         self.show_workspace = A("Workspace Folder", self.toggle_workspace, None, "folder", True, self.settings["show_workspace"])
         self.view_results = A("Results Panel", self.toggle_results, "Ctrl+Shift+J", None, True, False)
         self.a_zoom_in = A("Zoom In", lambda: self.zoom(1), "Ctrl+=", "zoomin", tip="Zoom in (Ctrl+wheel)")
@@ -560,7 +569,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         fm = m.addMenu("Code Folding")
         for a in (self.a_fold, self.a_unfold, self.a_fold_all, self.a_fold_funcs, self.a_unfold_all):
             fm.addAction(a)
-        for a in (self.view_wrap, self.view_ws, self.view_guides, self.view_marks, None, self.show_workspace, self.view_map, self.view_results, None,
+        for a in (self.view_wrap, self.view_ws, self.view_guides, self.view_marks, None, self.a_md_preview, self.a_preview_full, self.show_workspace, self.view_map, self.view_results, None,
                   self.a_zoom_in, self.a_zoom_out, self.a_zoom_reset, None, self.a_full):
             m.addSeparator() if a is None else m.addAction(a)
 
@@ -912,6 +921,8 @@ class MainWindow(FramelessMixin, QMainWindow):
         if self.split_pane is not None:
             self.split_editor.restyle()
         self.minimap.update()
+        self.preview.restyle()
+        self._refresh_preview()
         for i in range(self.tabs.count()):
             self._decorate_tab(self.tabs.widget(i))
 
@@ -2786,6 +2797,51 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.settings["show_minimap"] = on
         self.map_dock.setVisible(on)
 
+    def show_markdown_preview(self):
+        """Opens the Preview tab of the right-hand panels, wide enough to read, with the current document rendered."""
+        page = self.current()
+        if page is None or page.is_large:
+            return
+        self.settings["show_minimap"] = True
+        self.view_map.setChecked(True)
+        self.map_dock.show()
+        self.side.setCurrentWidget(self.preview)
+        self.resizeDocks([self.map_dock], [max(420, int(self.width() * 0.45))], Qt.Horizontal)
+        self._refresh_preview()
+
+    def _preview_source(self):
+        """(text, language, folder) of the current document, or None when there is nothing to show."""
+        page = self.current()
+        ed = self.editor_of(page) if page is not None and not page.is_large else None
+        if ed is None:
+            return None
+        return ed.toPlainText(), ed.lang, os.path.dirname(page.path) if page.path else ""
+
+    def _refresh_preview(self):
+        src = self._preview_source()
+        if self.preview_full is not None and self.preview_full.isVisible() and src:
+            self.preview_full.view.show_document(*src)
+        if self.side.currentWidget() is not self.preview or not self.map_dock.isVisible():
+            return
+        if src is None:
+            self.preview.view.setPlainText("")
+            return
+        self.preview.view.show_document(*src)
+
+    def toggle_preview_fullscreen(self):
+        if self.preview_full is not None and self.preview_full.isVisible():
+            self.preview_full.close()
+            return
+        src = self._preview_source()
+        if src is None:
+            return
+        if self.preview_full is None:
+            self.preview_full = PreviewFullScreen(self)
+            self.preview_full.closed.connect(lambda: self.activateWindow())
+        self.preview_full.view.restyle()
+        self.preview_full.view.show_document(*src)
+        self.preview_full.showFullScreen()
+
     def toggle_workspace(self, on):
         self.settings["show_workspace"] = on
         self.workspace_dock.setVisible(on)
@@ -2793,7 +2849,14 @@ class MainWindow(FramelessMixin, QMainWindow):
     def toggle_results(self, on):
         self.bottom_dock.setVisible(on)
 
+    def _preview_showing(self):
+        return self.side.currentWidget() is self.preview and self.map_dock.isVisible()
+
     def toggle_full(self, on):
+        if self._preview_showing() or (self.preview_full is not None and self.preview_full.isVisible()):
+            self.a_full.setChecked(self.isFullScreen())          # F11 belongs to the preview while it is open
+            self.toggle_preview_fullscreen()
+            return
         self.showFullScreen() if on else self.showNormal()
 
     def zoom(self, delta):
@@ -2892,6 +2955,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         ed = self.editor_of(self.current())
         self.functions.refresh(ed)
         self.images.refresh(ed)
+        self._refresh_preview()
         self._update_status()
 
     def _update_all(self):
@@ -2900,6 +2964,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.minimap.set_editor(ed if page is not None and not page.is_large else None)
         self.functions.refresh(ed)
         self.images.refresh(ed)
+        self._refresh_preview()
         self._update_status()
         self._update_title()
         self.refresh_documents()
