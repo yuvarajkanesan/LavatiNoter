@@ -101,13 +101,30 @@ class PreferencesDialog(QDialog):
 
 
 class _PlusFollower(QObject):
-    """Keeps the new-tab button just after the last tab as tabs open, close, move or change width."""
+    """Keeps the new-tab button just after the last tab. When the tabs overflow (the scroll arrows appear) it moves into the tab
+    widget's corner instead, so Qt keeps the arrows clear of it."""
 
-    def __init__(self, bar, plus):
-        super().__init__(bar)
-        self.bar, self.plus, self._busy = bar, plus, False
+    def __init__(self, tabs, plus):
+        super().__init__(tabs)
+        self.tabs, self.bar, self.plus, self._busy, self._corner = tabs, tabs.tabBar(), plus, False, False
+
+    def _overflowing(self):
+        used = sum(self.bar.tabSizeHint(i).width() for i in range(self.bar.count()))     # natural widths: they do not shrink when the bar does
+        room = self.tabs.width() - self.plus.sizeHint().width() - 12
+        return used > room + (30 if self._corner else 0)                                # a little slack so it cannot flip back and forth
 
     def place(self):
+        over = self._overflowing()
+        if over != self._corner:
+            self._corner = over
+            if over:
+                self.tabs.setCornerWidget(self.plus, Qt.TopRightCorner)
+            else:
+                self.tabs.setCornerWidget(None, Qt.TopRightCorner)
+                self.plus.setParent(self.bar)
+            self.plus.show()
+        if over:
+            return
         n = self.bar.count()
         x = self.bar.tabRect(n - 1).right() + 6 if n else 4
         x = max(0, min(x, self.bar.width() - self.plus.width() - 2))
@@ -200,8 +217,9 @@ class MainWindow(FramelessMixin, QMainWindow):
         plus.setToolTip("New document (Ctrl+N)")
         plus.clicked.connect(lambda _=False: self.new_file())
         self.plus = plus
-        self._plus_filter = _PlusFollower(bar, plus)
+        self._plus_filter = _PlusFollower(self.tabs, plus)
         bar.installEventFilter(self._plus_filter)
+        self.tabs.installEventFilter(self._plus_filter)
         self.main_split = QSplitter(Qt.Horizontal)
         self.main_split.setChildrenCollapsible(False)
         self.main_split.setHandleWidth(1)
