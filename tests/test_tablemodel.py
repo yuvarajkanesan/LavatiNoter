@@ -136,3 +136,13 @@ class EditTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FitWidthTests(unittest.TestCase):
+    def test_fit_stretches_columns_to_width(self):
+        m = tm.TableModel.blank(3, 3, True)
+        m.fit = 60
+        widths = {tm.display_width(l) for l in m.render().split("\n") if l}
+        self.assertEqual(widths, {60})
+        m.fit = 0
+        self.assertLess(tm.display_width(m.render().split("\n")[0]), 60)

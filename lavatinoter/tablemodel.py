@@ -59,6 +59,7 @@ class TableModel:
             r.extend([""] * (n - len(r)))
         self.aligns = list(aligns or [])[:n] + ["left"] * max(n - len(aligns or []), 0)
         self.header, self.style = bool(header), style
+        self.fit = 0                                           # when set: stretch the columns to this many characters
 
     @classmethod
     def blank(cls, rows, cols, header=True, aligns=None, style="markdown"):
@@ -88,6 +89,10 @@ class TableModel:
         for r in self.rows:
             for i, c in enumerate(r):
                 w[i] = max(w[i], display_width(self.shown(c, style)))
+        extra = self.fit - (sum(w) + 3 * len(w) + 1)
+        if extra > 0:
+            for i in range(len(w)):
+                w[i] += extra // len(w) + (1 if i < extra % len(w) else 0)
         return w
 
     # ---- editing ----------------------------------------------------------------------------------------------------------

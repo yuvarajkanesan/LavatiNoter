@@ -564,6 +564,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         ln = m.addMenu("Line Operations")
         for a in (self.a_sort_asc, self.a_sort_desc, self.a_unique, self.a_blank, self.a_trim):
             ln.addAction(a)
+        m.addAction(self.a_insert_table)
         mc = m.addMenu("Multiple Cursors")
         for a in (self.a_next_occ, self.a_all_occ, self.a_cursor_up, self.a_cursor_down):
             mc.addAction(a)

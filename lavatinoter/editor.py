@@ -835,7 +835,7 @@ class CodeEditor(QPlainTextEdit):
             add(menu, "Insert table...", self.insertTableRequested.emit, True, "Ctrl+Alt+T", "borders")
             ctx = self._table_ctx() if self._tables_on() else None
             if ctx is not None and ctx["row"] is not None:
-                tm_ = submenu("Table", "borders")
+                tm_ = submenu("Edit table", "borders")
                 add(tm_, "Add row above", lambda: self.table_add_row(False))
                 add(tm_, "Add row below", lambda: self.table_add_row(True))
                 add(tm_, "Delete row", self.table_delete_row, len(ctx["model"].rows) > 1)
@@ -848,6 +848,8 @@ class CodeEditor(QPlainTextEdit):
                 theme.round_menu(al)
                 for name in ("left", "center", "right"):
                     add(al, name.capitalize(), lambda _=False, n=name: self.table_set_alignment(n))
+                add(tm_, "Delete table", self.table_delete)
+                add(tm_, "Fit columns to window width", lambda: self.set_table_fit(not getattr(self, "table_fit", False)))
                 add(tm_, "Re-format table", self.reformat_table)
                 cv = tm_.addMenu("Convert table to")
                 theme.round_menu(cv)
@@ -1686,6 +1688,7 @@ class CodeEditor(QPlainTextEdit):
         model = tm.parse("\n".join(lines))
         if model is None:
             return None
+        model.fit = self.table_fit_width()
         ctx = {"first": first.blockNumber(), "last": last.blockNumber(), "model": model, "lines": lines, "row": None, "cell": 0, "offset": 0,
                "border": False}
         k = blk.blockNumber() - first.blockNumber()
@@ -1837,6 +1840,32 @@ class CodeEditor(QPlainTextEdit):
             m.aligns[c] = align
             return (r, c, 0)
         return self._table_edit(f)
+
+    def table_fit_width(self):
+        """Characters that fit the editor width when "Fit columns to window width" is on, else 0."""
+        if not getattr(self, "table_fit", False):
+            return 0
+        return max(int(self.viewport().width() / max(self.fontMetrics().horizontalAdvance("0"), 1)) - 2, 0)
+
+    def set_table_fit(self, on):
+        self.table_fit = bool(on)
+        return self.reformat_table() if self._tables_on() else False
+
+    def table_delete(self):
+        """Removes the whole table under the caret."""
+        ctx = self._table_ctx()
+        if ctx is None or not self._tables_on():
+            return False
+        doc = self.document()
+        first, last = doc.findBlockByNumber(ctx["first"]), doc.findBlockByNumber(ctx["last"])
+        cur = QTextCursor(doc)
+        cur.beginEditBlock()
+        cur.setPosition(first.position())
+        end = last.next().position() if last.next().isValid() else last.position() + last.length() - 1
+        cur.setPosition(end, QTextCursor.KeepAnchor)
+        cur.removeSelectedText()
+        cur.endEditBlock()
+        return True
 
     def table_convert(self, kind):
         """Turns the table under the caret into tab / space aligned plain text ("plain") or CSV ("csv")."""
