@@ -2012,8 +2012,9 @@ class CodeEditor(QPlainTextEdit):
                     col.setAlpha(190)
                     p.setPen(QPen(col, 1))
                 line = block.layout().lineAt(0)
-                top, bot = geo.top(), geo.top() + max(line.height(), 1)
-                cy = round((top + bot) / 2)
+                top, bot = geo.top(), geo.bottom()
+                cy = round(geo.top() + max(line.height(), 1) / 2)
+                base = QColor(theme.c("LINE_HL")) if block == self.textCursor().block() else self.palette().color(QPalette.Base)
                 u16 = 0
                 for ch in text:
                     n = 2 if ord(ch) > 0xFFFF else 1
@@ -2022,6 +2023,7 @@ class CodeEditor(QPlainTextEdit):
                         x0 = geo.left() + line.cursorToX(u16)[0]
                         x1 = geo.left() + line.cursorToX(u16 + n)[0]
                         cx = round((x0 + x1) / 2)
+                        p.fillRect(round(x0), round(top), round(x1 - x0) + 1, round(bot - top), base)      # hides the font glyph
                         if "u" in sides:
                             p.drawLine(cx, round(top), cx, cy)
                         if "d" in sides:
@@ -2040,8 +2042,9 @@ class CodeEditor(QPlainTextEdit):
     def _paint_pipe_row(self, p, block, geo, text):
         """Markdown tables: the pipes become unbroken vertical lines and the --- separator row one solid horizontal line."""
         line = block.layout().lineAt(0)
-        top, bot = round(geo.top()), round(geo.top() + max(line.height(), 1))
-        cy = round((top + bot) / 2)
+        top, bot = round(geo.top()), round(geo.bottom())                 # the whole block, so the lines join from row to row
+        cy = round(geo.top() + max(line.height(), 1) / 2)
+        base = QColor(theme.c("LINE_HL")) if block == self.textCursor().block() else self.palette().color(QPalette.Base)
         xs, u16, prev = [], 0, ""
         for ch in text:
             n = 2 if ord(ch) > 0xFFFF else 1
@@ -2053,9 +2056,10 @@ class CodeEditor(QPlainTextEdit):
         if len(xs) < 2:
             return
         if self._SEPARATOR.match(text.rstrip()):
-            p.fillRect(xs[0], cy - 3, xs[-1] - xs[0], 7, self.palette().color(QPalette.Base))
+            p.fillRect(xs[0], cy - 3, xs[-1] - xs[0], 7, base)
             p.drawLine(xs[0], cy, xs[-1], cy)
         for x in xs:
+            p.fillRect(x - 3, top, 7, bot - top, base)                      # hides the font's own (broken) pipe
             p.drawLine(x, top, x, bot)
 
     def _paint_borders(self):
