@@ -1998,7 +1998,14 @@ class CodeEditor(QPlainTextEdit):
             if geo.top() > bottom:
                 break
             text = block.text()
-            if text[:1] in "┌├└│" and block.isVisible():
+            if text[:1] == "|" and block.isVisible():
+                if p is None:
+                    p = QPainter(self.viewport())
+                    col = QColor(self.palette().color(QPalette.Text))
+                    col.setAlpha(190)
+                    p.setPen(QPen(col, 1))
+                self._paint_pipe_row(p, block, geo, text)
+            elif text[:1] in "┌├└│" and block.isVisible():
                 if p is None:
                     p = QPainter(self.viewport())
                     col = QColor(self.palette().color(QPalette.Text))
@@ -2027,6 +2034,29 @@ class CodeEditor(QPlainTextEdit):
             block = block.next()
         if p is not None:
             p.end()
+
+    _SEPARATOR = re.compile(r"^\|[\s:\-|]*-[\s:\-|]*$")
+
+    def _paint_pipe_row(self, p, block, geo, text):
+        """Markdown tables: the pipes become unbroken vertical lines and the --- separator row one solid horizontal line."""
+        line = block.layout().lineAt(0)
+        top, bot = round(geo.top()), round(geo.top() + max(line.height(), 1))
+        cy = round((top + bot) / 2)
+        xs, u16, prev = [], 0, ""
+        for ch in text:
+            n = 2 if ord(ch) > 0xFFFF else 1
+            if ch == "|" and prev != "\\":
+                x0, x1 = line.cursorToX(u16)[0], line.cursorToX(u16 + n)[0]
+                xs.append(round(geo.left() + (x0 + x1) / 2))
+            u16 += n
+            prev = ch
+        if len(xs) < 2:
+            return
+        if self._SEPARATOR.match(text.rstrip()):
+            p.fillRect(xs[0], cy - 3, xs[-1] - xs[0], 7, self.palette().color(QPalette.Base))
+            p.drawLine(xs[0], cy, xs[-1], cy)
+        for x in xs:
+            p.drawLine(x, top, x, bot)
 
     def _paint_borders(self):
         if not self._has_para:
