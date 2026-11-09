@@ -849,7 +849,7 @@ class CodeEditor(QPlainTextEdit):
                 for name in ("left", "center", "right"):
                     add(al, name.capitalize(), lambda _=False, n=name: self.table_set_alignment(n))
                 add(tm_, "Delete table", self.table_delete)
-                add(tm_, "Fit columns to window width", lambda: self.set_table_fit(not getattr(self, "table_fit", False)))
+                add(tm_, "Fit columns to window width", lambda: self.set_table_fit(not getattr(self, "table_fit", True)))
                 add(tm_, "Re-format table", self.reformat_table)
                 cv = tm_.addMenu("Convert table to")
                 theme.round_menu(cv)
@@ -1846,7 +1846,7 @@ class CodeEditor(QPlainTextEdit):
 
     def table_fit_width(self):
         """Characters that fit the editor width when "Fit columns to window width" is on, else 0."""
-        if not getattr(self, "table_fit", False):
+        if not getattr(self, "table_fit", True):
             return 0
         return max(int(self.viewport().width() / max(self.fontMetrics().horizontalAdvance("0"), 1)) - 2, 0)
 
@@ -1927,6 +1927,7 @@ class CodeEditor(QPlainTextEdit):
         else:
             from . import tablemodel as tm
             model = tm.TableModel.blank(rows + (1 if header else 0), cols, header, aligns, style or "markdown")
+            model.fit = self.table_fit_width()
             text = model.render()
         cur = self.textCursor()
         if cur.positionInBlock() > 0:
@@ -2055,12 +2056,18 @@ class CodeEditor(QPlainTextEdit):
             prev = ch
         if len(xs) < 2:
             return
-        if self._SEPARATOR.match(text.rstrip()):
+        sep = bool(self._SEPARATOR.match(text.rstrip()))
+        if sep:
             p.fillRect(xs[0], cy - 3, xs[-1] - xs[0], 7, base)
             p.drawLine(xs[0], cy, xs[-1], cy)
         for x in xs:
             p.fillRect(x - 3, top, 7, bot - top, base)                      # hides the font's own (broken) pipe
             p.drawLine(x, top, x, bot)
+        prev, nxt = block.previous(), block.next()
+        if not (prev.isValid() and prev.text()[:1] == "|"):                 # a complete grid: top edge, a line under every body row
+            p.drawLine(xs[0], top, xs[-1], top)
+        if not sep and not (nxt.isValid() and self._SEPARATOR.match(nxt.text().rstrip())):
+            p.drawLine(xs[0], bot - 1, xs[-1], bot - 1)
 
     def _paint_borders(self):
         if not self._has_para:
