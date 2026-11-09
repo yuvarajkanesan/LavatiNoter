@@ -774,23 +774,25 @@ class MarkdownPreview(QTextBrowser):
 
     def _decorate_rendered(self):
         """Tables and code blocks of a rendered Markdown document: borders, padding, header shading, a tinted block for code."""
-        from PySide6.QtGui import QBrush, QTextCursor, QTextFormat, QTextTable, QTextLength
+        from PySide6.QtGui import QBrush, QTextCursor, QTextFormat, QTextFrameFormat, QTextTable, QTextLength
         doc = self.document()
         line, tint = QColor(theme.c("BORDER")), QColor(theme.c("HOVER"))
         for fr in doc.rootFrame().childFrames():
             if isinstance(fr, QTextTable):
                 fmt = fr.format()
                 fmt.setBorder(1)
-                fmt.setBorderBrush(QBrush(line))
-                fmt.setCellPadding(7)
+                fmt.setBorderBrush(QBrush(QColor("#8a8a8a")))
+                fmt.setBorderStyle(QTextFrameFormat.BorderStyle_Solid)
+                fmt.setCellPadding(14)                              # roomy rows, full width, like a Word table
                 fmt.setCellSpacing(0)
+                fmt.setWidth(QTextLength(QTextLength.PercentageLength, 100))
                 fmt.setTopMargin(8)
                 fmt.setBottomMargin(12)
                 fr.setFormat(fmt)
                 for c in range(fr.columns()):
                     cell = fr.cellAt(0, c)
                     cf = cell.format()
-                    cf.setBackground(QBrush(tint))
+                    cf.setFontWeight(700)                           # the header row is bold; no tint, like a plain Word grid
                     cell.setFormat(cf)
         cur = QTextCursor(doc)
         b = doc.begin()
