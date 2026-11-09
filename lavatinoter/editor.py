@@ -85,6 +85,7 @@ class CodeEditor(QPlainTextEdit):
     definitionRequested = Signal(str)       # Ctrl+click on a name: the window finds its definition
     openPathRequested = Signal(str)         # 'Open File' in the right-click menu
     statusMessage = Signal(str)             # short messages for the status bar
+    insertTableRequested = Signal()
     imageActivated = Signal(str)            # a picture was double-clicked: the window shows it large
 
     is_large = False
@@ -169,6 +170,14 @@ class CodeEditor(QPlainTextEdit):
         self.document().setDocumentMargin(8)
         self.blockCountChanged.connect(self._update_gutter_width)
         self.updateRequest.connect(self._update_gutter)
+        self._table_busy = False
+        self._wrap_saved = None
+        self._table_timer = QTimer(self, singleShot=True, interval=100)
+        self._table_timer.timeout.connect(self._auto_repad)
+        self.document().contentsChange.connect(self._schedule_repad)
+        self._nowrap_timer = QTimer(self, singleShot=True, interval=0)       # never change the wrap mode in the middle of an edit
+        self._nowrap_timer.timeout.connect(self._table_nowrap)
+        self.cursorPositionChanged.connect(self._nowrap_timer.start)
         self.cursorPositionChanged.connect(self._on_cursor)
         self.selectionChanged.connect(self._on_cursor)
         self.document().contentsChange.connect(self._on_edit)
@@ -822,6 +831,28 @@ class CodeEditor(QPlainTextEdit):
         add(menu, "Paste", self.paste, not ro, "Ctrl+V", "paste")
         add(menu, "Delete", lambda: self.textCursor().removeSelectedText(), has_sel and not ro, "Del", "delete")
         menu.addSeparator()
+        if self.format_supported() and not ro:
+            add(menu, "Insert table...", self.insertTableRequested.emit, True, "Ctrl+Alt+T", "borders")
+            ctx = self._table_ctx() if self._tables_on() else None
+            if ctx is not None and ctx["row"] is not None:
+                tm_ = submenu("Table", "borders")
+                add(tm_, "Add row above", lambda: self.table_add_row(False))
+                add(tm_, "Add row below", lambda: self.table_add_row(True))
+                add(tm_, "Delete row", self.table_delete_row, len(ctx["model"].rows) > 1)
+                tm_.addSeparator()
+                add(tm_, "Add column left", lambda: self.table_add_column(False))
+                add(tm_, "Add column right", lambda: self.table_add_column(True))
+                add(tm_, "Delete column", self.table_delete_column, ctx["model"].ncols > 1)
+                tm_.addSeparator()
+                al = tm_.addMenu("Change alignment")
+                theme.round_menu(al)
+                for name in ("left", "center", "right"):
+                    add(al, name.capitalize(), lambda _=False, n=name: self.table_set_alignment(n))
+                add(tm_, "Re-format table", self.reformat_table)
+                cv = tm_.addMenu("Convert table to")
+                theme.round_menu(cv)
+                add(cv, "Plain text", lambda: self.table_convert("plain"))
+                add(cv, "CSV", lambda: self.table_convert("csv"))
         add(menu, "Select all", self.selectAll, True, "Ctrl+A", "selectall")
         mode = submenu("Selection mode", "selmode")
         add(mode, "Begin / end select" + (" (start is set)" if self._sel_mark else ""), lambda: self.begin_end_select(False))
@@ -879,6 +910,16 @@ class CodeEditor(QPlainTextEdit):
         key, mods = e.key(), e.modifiers()
         if self.isReadOnly():
             return super().keyPressEvent(e)
+        if self._tables_on() and not (mods & (Qt.ControlModifier | Qt.AltModifier)):
+            if key in (Qt.Key_Tab, Qt.Key_Backtab) and not self.textCursor().hasSelection():
+                if self.table_tab(key == Qt.Key_Backtab or bool(mods & Qt.ShiftModifier)):      # in a table Tab moves between cells
+                    self._completer.popup().hide()
+                    return
+            elif key in (Qt.Key_Return, Qt.Key_Enter) and not self.textCursor().hasSelection() and not self._completer.popup().isVisible():
+                if self.table_enter():
+                    return
+            if self.table_guard(key, e.text()):
+                return
         if self._completer.popup().isVisible() and key in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Escape, Qt.Key_Tab, Qt.Key_Backtab):
             e.ignore()                       # the suggestion list takes these keys (Enter / Tab accept, Esc closes)
             return
@@ -1618,16 +1659,243 @@ class CodeEditor(QPlainTextEdit):
         cur.endEditBlock()
         return True
 
-    def insert_table(self, cols, rows):
-        """Inserts a table with a header row and `rows` empty rows: Markdown (or plain text) pipes, HTML tags in an HTML document."""
+    # ---- text tables ----------------------------------------------------------------------------------------------------------
+    def _tables_on(self):
+        return not self.isReadOnly() and self.lang.name in ("Markdown", "Plain text")
+
+    def _table_ctx(self, block=None):
+        """The table around `block` (default: the caret line) as {first, last, model, row, cell, offset}, or None.
+        Only the lines of the table itself are read, never the rest of the document."""
+        from . import tablemodel as tm
+        blk = block or self.textCursor().block()
+        if not blk.isValid() or not tm.is_table_line(blk.text()):
+            return None
+        first = last = blk
+        while first.previous().isValid() and tm.is_table_line(first.previous().text()):
+            first = first.previous()
+        while last.next().isValid() and tm.is_table_line(last.next().text()):
+            last = last.next()
+        if first == last:
+            return None
+        lines, b = [], first
+        while True:
+            lines.append(b.text())
+            if b == last:
+                break
+            b = b.next()
+        model = tm.parse("\n".join(lines))
+        if model is None:
+            return None
+        ctx = {"first": first.blockNumber(), "last": last.blockNumber(), "model": model, "lines": lines, "row": None, "cell": 0, "offset": 0,
+               "border": False}
+        k = blk.blockNumber() - first.blockNumber()
+        style = model.style
+        if style == "plain":
+            return ctx
+        rows_before = sum(1 for i in range(k) if not tm._is_border(lines[i]) and not (style == "markdown" and tm._MD_SEP.match(lines[i])))
+        here = lines[k]
+        if tm._is_border(here) or (style == "markdown" and tm._MD_SEP.match(here)):
+            ctx["border"] = True
+            return ctx
+        loc = tm.locate(here, tm.to_index(here, self.textCursor().positionInBlock()), style)
+        if loc is None:
+            return ctx
+        ctx["row"] = min(rows_before, len(model.rows) - 1)
+        ctx["cell"], ctx["offset"] = loc[0], loc[1]
+        ctx["cell"] = min(ctx["cell"], model.ncols - 1)
+        return ctx
+
+    def _apply_table(self, ctx, model, caret=None, join=False):
+        """Replaces the table's lines with the model rendered, as one undo step, and puts the caret in (row, cell, offset)."""
+        from . import tablemodel as tm
+        doc = self.document()
+        first, last = doc.findBlockByNumber(ctx["first"]), doc.findBlockByNumber(ctx["last"])
+        lines, at = model.render_lines()
+        text = "\n".join(lines)
+        cur = QTextCursor(doc)
+        self._table_busy = True
+        try:
+            (cur.joinPreviousEditBlock if join else cur.beginEditBlock)()
+            cur.setPosition(first.position())
+            cur.setPosition(last.position() + last.length() - 1, QTextCursor.KeepAnchor)
+            if cur.selectedText().replace("\u2029", "\n") != text:
+                cur.insertText(text)
+            cur.endEditBlock()
+        finally:
+            self._table_busy = False
+        if caret is not None:
+            row, cell, off = caret
+            row, cell = max(0, min(row, len(model.rows) - 1)), max(0, min(cell, model.ncols - 1))
+            blk = doc.findBlockByNumber(ctx["first"] + at[row])
+            c = QTextCursor(doc)
+            c.setPosition(blk.position() + tm.to_u16(blk.text(), tm.caret_column(model, row, cell, off)))
+            self.setTextCursor(c)
+            self.ensureCursorVisible()
+
+    def reformat_table(self, join=False):
+        """Finds the table under the caret (by its borders or pipes) and normalises its widths, padding and alignment."""
+        ctx = self._table_ctx()
+        if ctx is None or not self._tables_on():
+            return False
+        caret = (ctx["row"], ctx["cell"], ctx["offset"]) if ctx["row"] is not None else None
+        if caret is None and ctx["model"].style != "plain":
+            caret = None
+        self._apply_table(ctx, ctx["model"], caret, join)
+        return True
+
+    def table_tab(self, back=False):
+        """Tab / Shift+Tab inside a table: re-aligns it and moves to the next / previous cell (Tab in the last cell adds a row)."""
+        ctx = self._table_ctx()
+        if ctx is None or ctx["row"] is None or not self._tables_on():
+            return False
+        m, row, cell = ctx["model"], ctx["row"], ctx["cell"]
+        step = -1 if back else 1
+        cell += step
+        if cell >= m.ncols or cell < 0:
+            row += step
+            cell = 0 if step > 0 else m.ncols - 1
+        if row < 0:
+            row, cell = 0, 0
+        if row >= len(m.rows):
+            m.add_row()
+        self._apply_table(ctx, m, (row, cell, 0))
+        return True
+
+    def table_enter(self):
+        """Enter inside a table: the cell below (a new row when this is the last row)."""
+        ctx = self._table_ctx()
+        if ctx is None or ctx["row"] is None or not self._tables_on():
+            return False
+        m, row = ctx["model"], ctx["row"] + 1
+        if row >= len(m.rows):
+            m.add_row()
+        self._apply_table(ctx, m, (row, ctx["cell"], 0))
+        return True
+
+    def table_guard(self, key, text):
+        """True when this key would damage a table (a border, a separator or the padding around a cell): it is swallowed instead."""
+        from . import tablemodel as tm
+        if not self._tables_on() or not tm.is_table_line(self.textCursor().block().text()):
+            return False
+        if key in (Qt.Key_Backspace, Qt.Key_Delete) or (text and text.isprintable()):
+            ctx = self._table_ctx()
+            if ctx is None:
+                return False
+            cur = self.textCursor()
+            if ctx["border"] or (ctx["row"] is None and ctx["model"].style != "plain"):
+                return True
+            if cur.hasSelection():
+                a, b = cur.selectionStart(), cur.selectionEnd()
+                da, db = self.document().findBlock(a), self.document().findBlock(b)
+                if da != db:
+                    return True
+                style = ctx["model"].style
+                la = tm.locate(da.text(), tm.to_index(da.text(), a - da.position()), style)
+                lb = tm.locate(db.text(), tm.to_index(db.text(), b - db.position()), style)
+                return la is None or lb is None or la[0] != lb[0]
+            if key == Qt.Key_Backspace and ctx["offset"] == 0:
+                return True
+            if key == Qt.Key_Delete and ctx["offset"] >= len(ctx["model"].rows[ctx["row"]][ctx["cell"]]):
+                return True
+        return False
+
+    def _table_edit(self, fn, caret_fn=None):
+        ctx = self._table_ctx()
+        if ctx is None or ctx["row"] is None or not self._tables_on():
+            return False
+        m = ctx["model"]
+        caret = fn(m, ctx["row"], ctx["cell"])
+        self._apply_table(ctx, m, caret or (ctx["row"], ctx["cell"], 0))
+        return True
+
+    def table_add_row(self, below=True):
+        def f(m, r, c):
+            m.add_row(r + 1 if below else r)
+            return (r + 1 if below else r, c, 0)
+        return self._table_edit(f)
+
+    def table_delete_row(self):
+        def f(m, r, c):
+            m.delete_row(r)
+            return (min(r, len(m.rows) - 1), c, 0)
+        return self._table_edit(f)
+
+    def table_add_column(self, right=True):
+        def f(m, r, c):
+            m.add_column(c + 1 if right else c)
+            return (r, c + 1 if right else c, 0)
+        return self._table_edit(f)
+
+    def table_delete_column(self):
+        def f(m, r, c):
+            m.delete_column(c)
+            return (r, min(c, m.ncols - 1), 0)
+        return self._table_edit(f)
+
+    def table_set_alignment(self, align):
+        def f(m, r, c):
+            m.aligns[c] = align
+            return (r, c, 0)
+        return self._table_edit(f)
+
+    def table_convert(self, kind):
+        """Turns the table under the caret into tab / space aligned plain text ("plain") or CSV ("csv")."""
+        ctx = self._table_ctx()
+        if ctx is None or not self._tables_on():
+            return False
+        m = ctx["model"]
+        text = (m.to_csv() if kind == "csv" else m.to_plain()).rstrip("\n")
+        doc = self.document()
+        first, last = doc.findBlockByNumber(ctx["first"]), doc.findBlockByNumber(ctx["last"])
+        cur = QTextCursor(doc)
+        cur.beginEditBlock()
+        cur.setPosition(first.position())
+        cur.setPosition(last.position() + last.length() - 1, QTextCursor.KeepAnchor)
+        cur.insertText(text)
+        cur.endEditBlock()
+        return True
+
+    def _table_nowrap(self):
+        """Table lines never wrap: while the caret is in a table the view scrolls sideways instead."""
+        from . import tablemodel as tm
+        inside = self._tables_on() and tm.is_table_line(self.textCursor().block().text())
+        if inside and self.lineWrapMode() != QPlainTextEdit.NoWrap:
+            self._wrap_saved = self.lineWrapMode()
+            self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        elif not inside and getattr(self, "_wrap_saved", None) is not None:
+            self.setLineWrapMode(self._wrap_saved)
+            self._wrap_saved = None
+
+    def _auto_repad(self):
+        """About 100 ms after typing in a table: pad every column again so the borders stay aligned (merged into the typing's undo step)."""
+        if self._table_busy or not self._tables_on():
+            return
+        ctx = self._table_ctx()
+        if ctx is None or ctx["border"]:
+            return
+        lines, _at = ctx["model"].render_lines()
+        if lines == ctx["lines"]:
+            return
+        caret = (ctx["row"], ctx["cell"], ctx["offset"]) if ctx["row"] is not None else None
+        self._apply_table(ctx, ctx["model"], caret, join=True)
+
+    def _schedule_repad(self, *_):
+        if not self._table_busy and self._tables_on():
+            self._table_timer.start()
+
+    def insert_table(self, cols, rows, header=True, style=None, aligns=None):
+        """Inserts a table: `rows` empty rows below the header (the header counts as an extra row when `header` is on).
+        Styles: markdown, ascii, unicode, plain; HTML tags in an HTML document."""
         if self.isReadOnly():
             return False
-        names = [f"Column {i + 1}" for i in range(cols)]
         if self.lang.name == "HTML / XML":
+            names = [f"Column {i + 1}" for i in range(cols)]
             body = "".join("  <tr>" + "<td></td>" * cols + "</tr>\n" for _ in range(rows))
             text = "<table>\n  <tr>" + "".join(f"<th>{n}</th>" for n in names) + "</tr>\n" + body + "</table>\n"
         else:
-            text = "| " + " | ".join(names) + " |\n| " + " | ".join("---" for _ in names) + " |\n" + ("|" + "  |" * cols + "\n") * rows
+            from . import tablemodel as tm
+            model = tm.TableModel.blank(rows + (1 if header else 0), cols, header, aligns, style or "markdown")
+            text = model.render()
         cur = self.textCursor()
         if cur.positionInBlock() > 0:
             text = "\n" + text
@@ -2751,6 +3019,15 @@ class CodeEditor(QPlainTextEdit):
         if self.read_only_window or not self.format_supported():
             return md
         raw = self.textCursor().selectedText().replace("\u2029", "\n")
+        if raw and "|" in raw:
+            from . import tables
+            table_html = tables.markdown_to_html(raw)
+            if table_html:                                    # a Markdown table pastes as a real table into Word, Excel and mail
+                from PySide6.QtCore import QMimeData
+                md = QMimeData()
+                md.setText(raw)
+                md.setHtml(table_html)
+                return md
         if raw and richtext.has_marks(raw):
             from PySide6.QtCore import QMimeData
             md = QMimeData()                                  # Qt's own object answers from the selection and ignores what is set on it
@@ -2787,6 +3064,23 @@ class CodeEditor(QPlainTextEdit):
             self.textCursor().insertText(raw if self.format_supported() else richtext.strip_marks(raw))
             self.ensureCursorVisible()
             return
+        if self._tables_on() and src.hasText():
+            ctx = self._table_ctx()
+            if ctx is not None and ctx["row"] is not None:              # into a cell: one line, pipes escaped, never splitting the row
+                from . import tablemodel as tm
+                text = tm.clean_cell(src.text())
+                text = text.replace("|", "\\|" if ctx["model"].style == "markdown" else "\u00a6")
+                self.textCursor().insertText(text)
+                return
+        if not self.isReadOnly() and self.lang.name in ("Markdown", "Plain text"):
+            from . import tables
+            table = tables.from_mime(src, tsv=self.lang.name == "Markdown")        # a table from a web page, Word or Excel
+            if table:
+                cur = self.textCursor()
+                cur.insertText(("\n" if cur.positionInBlock() > 0 else "") + table)
+                self.setTextCursor(cur)
+                self.ensureCursorVisible()
+                return
         has_text = src.hasText() and bool(src.text().strip())
         if src.hasImage() and not has_text:
             img = src.imageData()
@@ -2928,7 +3222,7 @@ class CodeEditor(QPlainTextEdit):
             out.append(sel)
         return out
 
-    HINTS = (("Open a file", "Ctrl+O"), ("Reopen closed tab", "Ctrl+Shift+T"), ("Find an open tab", "Ctrl+Alt+T"))
+    HINTS = (("Open a file", "Ctrl+O"), ("Reopen closed tab", "Ctrl+Shift+T"), ("Find an open tab", "Ctrl+Alt+B"))
 
     def _paint_empty_hint(self):
         """An empty document says so: a faint prompt on line 1 and the three shortcuts worth knowing, gone with the first character."""

@@ -114,7 +114,7 @@ class MessageDialog(QDialog):
         k = theme.PALETTES[theme.THEME_NAME]
         self.setStyleSheet("QDialog#msgroot { background: transparent; }")
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(26, 18, 26, 34)
+        outer.setContentsMargins(16, 10, 16, 22)
         card = QFrame()
         card.setObjectName("msgcard")
         card.setStyleSheet(f"QFrame#msgcard {{ background: {k['PANEL']}; border: 1px solid {k['BORDER']}; border-radius: 14px; }} "
@@ -131,13 +131,13 @@ class MessageDialog(QDialog):
 
         head = QWidget()
         hl = QHBoxLayout(head)
-        hl.setContentsMargins(16, 10, 10, 0)
+        hl.setContentsMargins(12, 8, 8, 0)
         hl.setSpacing(8)
         mark = QLabel()
         mark.setPixmap(theme.note_mark_pixmap(16))
         t = QLabel(title)
         tf = QFont(theme.ui_family())
-        tf.setPixelSize(13)
+        tf.setPixelSize(12)
         tf.setWeight(QFont.Medium)
         t.setFont(tf)
         t.setStyleSheet(f"color: {k['TEXT']};")
@@ -154,18 +154,18 @@ class MessageDialog(QDialog):
 
         body = QWidget()
         bl = QHBoxLayout(body)
-        bl.setContentsMargins(28, 18, 28, 26)
-        bl.setSpacing(18)
+        bl.setContentsMargins(20, 10, 20, 16)
+        bl.setSpacing(14)
         ic = QLabel()
-        ic.setPixmap(badge_pixmap(kind, 56, dot))
-        ic.setFixedSize(56, 56)
+        ic.setPixmap(badge_pixmap(kind, 42, dot))
+        ic.setFixedSize(42, 42)
         bl.addWidget(ic, 0, Qt.AlignTop)
         tx = QVBoxLayout()
         tx.setSpacing(4)
         h = QLabel(heading)
         h.setWordWrap(True)
         hf = QFont(theme.ui_family())
-        hf.setPixelSize(19)
+        hf.setPixelSize(16)
         hf.setWeight(QFont.Bold)
         h.setFont(hf)
         h.setStyleSheet(f"color: {k['TEXT']};")
@@ -175,7 +175,7 @@ class MessageDialog(QDialog):
             d.setWordWrap(True)
             d.setTextInteractionFlags(Qt.TextSelectableByMouse)
             df = QFont(theme.ui_family())
-            df.setPixelSize(14)
+            df.setPixelSize(13)
             d.setFont(df)
             d.setStyleSheet(f"color: {k['MUTED']};")
             tx.addWidget(d)
@@ -187,14 +187,14 @@ class MessageDialog(QDialog):
         foot.setStyleSheet(f"QFrame {{ background: {k['BG']}; border: none; border-top: 1px solid {k['BORDER']}; "
                            "border-bottom-left-radius: 13px; border-bottom-right-radius: 13px; }}")
         fl = QHBoxLayout(foot)
-        fl.setContentsMargins(24, 16, 24, 16)
+        fl.setContentsMargins(16, 10, 16, 10)
         fl.setSpacing(10)
         fl.addStretch(1)
         self._buttons = []
         for i, (label, value, style) in enumerate(buttons):
             b = QPushButton(label)
             b.setCursor(Qt.PointingHandCursor)
-            b.setMinimumHeight(40)
+            b.setMinimumHeight(32)
             b.setStyleSheet(self._button_qss(style, k))
             b.clicked.connect(lambda _=False, v=value: self._done(v))
             if i == default:
@@ -203,15 +203,15 @@ class MessageDialog(QDialog):
             fl.addWidget(b)
             self._buttons.append(b)
         col.addWidget(foot)
-        self.setFixedWidth(580)
+        self.setFixedWidth(440)
         self._focus = self._buttons[default] if 0 <= default < len(self._buttons) else None
         self._head = head
         self.layout().activate()
-        self.setFixedHeight(self.layout().totalHeightForWidth(580) if self.layout().hasHeightForWidth() else self.sizeHint().height())
+        self.setFixedHeight(self.layout().totalHeightForWidth(440) if self.layout().hasHeightForWidth() else self.sizeHint().height())
 
     @staticmethod
     def _button_qss(style, k):
-        base = "QPushButton { border-radius: 8px; padding: 8px 22px; font-weight: 600; %s } QPushButton:hover { %s } QPushButton:focus { %s }"
+        base = "QPushButton { border-radius: 8px; padding: 5px 16px; font-weight: 600; %s } QPushButton:hover { %s } QPushButton:focus { %s }"
         if style == "primary":
             return base % (f"background: {k['ACCENT']}; color: {k['ON_ACCENT']}; border: 1px solid {k['ACCENT']};",
                            f"background: {k['ACCENT_HOVER']};", "outline: none;")
@@ -235,7 +235,7 @@ class MessageDialog(QDialog):
             self._focus.setFocus()
 
     def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton and self._head.geometry().translated(26, 18).contains(e.position().toPoint()):
+        if e.button() == Qt.LeftButton and self._head.geometry().translated(16, 10).contains(e.position().toPoint()):
             self._drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
 
     def mouseMoveEvent(self, e):

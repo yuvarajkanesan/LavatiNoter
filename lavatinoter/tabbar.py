@@ -10,17 +10,21 @@ from . import theme
 FADE = 28
 
 
-def badge_icon(is_markdown, size=16):
-    """MD on an accent tint for Markdown files, a small document for everything else."""
+STATE_COLORS = {"dirty": "#e5484d", "saved": "#2e9e5b"}
+
+
+def badge_icon(is_markdown, size=16, state=None):
+    """MD on a tint for Markdown files, a small document for everything else; red when it has unsaved changes, green when saved."""
     from PySide6.QtGui import QIcon
+    color = STATE_COLORS.get(state)
     if not is_markdown:
-        return theme.icon("file", theme.c("FAINT"), size)
+        return theme.icon("file", color or theme.c("FAINT"), size)
     pm = QPixmap(size * 2, size * 2)
     pm.setDevicePixelRatio(2)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
-    acc = QColor(theme.c("ACCENT"))
+    acc = QColor(color or theme.c("ACCENT"))
     tint = QColor(acc)
     tint.setAlphaF(0.16)
     p.setPen(Qt.NoPen)
@@ -41,25 +45,26 @@ class TabClose(QToolButton):
 
     def __init__(self, bar, info):
         super().__init__()
-        self.bar, self.info = bar, info              # info() -> (dirty, active, tab_hovered)
+        self.bar, self.info = bar, info              # info() -> (dirty, saved, active, tab_hovered)
         self.setFixedSize(20, 20)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("Close (Ctrl+W)")
         self.setAttribute(Qt.WA_Hover, True)
 
     def paintEvent(self, e):
-        dirty, active, hovered = self.info()
+        dirty, saved, active, hovered = self.info()
         over = self.underMouse()
-        show_x = over or hovered or (active and not dirty)
+        has_dot = dirty or saved
+        show_x = over or hovered or (active and not has_dot)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         if over:
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(theme.c("HOVER")))
             p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 5, 5)
-        if dirty and not show_x:
+        if has_dot and not show_x:
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(theme.c("ORANGE")))
+            p.setBrush(QColor(theme.c("RED") if dirty else "#2e9e5b"))        # red: unsaved changes, green: saved file
             p.drawEllipse(QRectF(6, 6, 8, 8))
         elif show_x:
             p.setPen(QPen(QColor(theme.c("TEXT") if over else theme.c("MUTED")), 1.5, Qt.SolidLine, Qt.RoundCap))
@@ -157,7 +162,7 @@ class TabCorner(QWidget):
         lay.setSpacing(2)
         self.lay = lay
         self.listbtn = QToolButton()
-        self.listbtn.setToolTip("All open tabs (Ctrl+Alt+T)")
+        self.listbtn.setToolTip("All open tabs (Ctrl+Alt+B)")
         self.listbtn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.listbtn.setCursor(Qt.PointingHandCursor)
         self.panelbtn = QToolButton()

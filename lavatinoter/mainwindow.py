@@ -21,7 +21,8 @@ from .largefile import GoToPanel, LargeFileView
 from . import search
 from .palette import Picker, fuzzy
 from .minitoolbar import FONTS, HIGHLIGHTS, SIZES_PT, TEXT_COLORS, _icon_with_bar
-from .popups import LineSpacingPopup, PopupButton
+from .popups import LineSpacingPopup, PopupButton, TablePopup
+from .tabledialog import TableDialog
 from .tabbar import DocTabs, TabClose, TabCorner, TabListPopup, badge_icon
 from .panels import FunctionsPanel, ImagePreview, ImagesPanel, MinimapWidget, PreviewFullScreen, PreviewPanel, ResultsPanel, WorkspacePanel, reveal_in_explorer
 
@@ -316,7 +317,6 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.side.currentChanged.connect(lambda _i: self._refresh_preview())
         self.side.tabBar().setExpanding(False)
         self.sync_scroll = True
-        self._panel_expanded = False
         corner = QWidget()
         cl = QHBoxLayout(corner)
         cl.setContentsMargins(0, 4, 6, 0)
@@ -327,8 +327,8 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.btn_sync.setToolTip("Sync scroll: the preview follows the editor, heading by heading")
         self.btn_sync.toggled.connect(self._set_sync_scroll)
         self.btn_expand = QToolButton()
-        self.btn_expand.setToolTip("Expand the panel to the whole work area (Esc to return)")
-        self.btn_expand.clicked.connect(self.toggle_panel_expand)
+        self.btn_expand.setToolTip("Show the formatted output full screen (F11; Esc to exit)")
+        self.btn_expand.clicked.connect(self.toggle_preview_fullscreen)
         self.btn_hide = QToolButton()
         self.btn_hide.setToolTip("Hide the panel")
         self.btn_hide.clicked.connect(lambda: self.view_map.trigger() if self.map_dock.isVisible() else None)
@@ -510,8 +510,12 @@ class MainWindow(FramelessMixin, QMainWindow):
                             "Suggests words from this document, the language's keywords and common English words while you type")
         self.a_lsp = A("Language Servers (LSP)...", self.edit_lsp, None, None, tip="Use an installed language server for go to definition, hover and error underlines")
         self.a_prefs = A("Preferences...", self.preferences, "Ctrl+,")
+        self.a_insert_table = A("Insert Table...", self.insert_table_dialog, "Ctrl+Alt+T", "borders",
+                                tip="Inserts a table: size, header, style and column alignment (Ctrl+Alt+T)")
+        self.a_reformat_table = A("Re-format Table", self._reformat_table, None, None,
+                                  tip="Normalises the widths, padding and alignment of the table under the caret")
         self.a_reopen_tab = A("Reopen Closed Tab", self.reopen_closed_tab, "Ctrl+Shift+T")
-        self.a_tab_list = A("Find an Open Tab...", self.show_tab_list, "Ctrl+Alt+T")
+        self.a_tab_list = A("Find an Open Tab...", self.show_tab_list, "Ctrl+Alt+B")
         self.a_next_tab = A("Next Tab", lambda: self.step_tab(1), "Ctrl+PgDown")
         self.a_prev_tab = A("Previous Tab", lambda: self.step_tab(-1), "Ctrl+PgUp")
         self.a_next_tab2 = A("Next Tab", lambda: self.step_tab(1), "Ctrl+Tab")
@@ -581,6 +585,8 @@ class MainWindow(FramelessMixin, QMainWindow):
         for a in (self.a_bold, self.a_italic, self.a_underline, self.a_clear_fmt, None, self.a_size_up, self.a_size_down):
             m.addSeparator() if a is None else m.addAction(a)
         m.addSeparator()
+        m.addAction(self.a_insert_table)
+        m.addAction(self.a_reformat_table)
         m.addAction(self.a_format_doc)
         m.addAction(self.a_minify)
         m.addAction(self.a_validate)
@@ -749,7 +755,8 @@ class MainWindow(FramelessMixin, QMainWindow):
             self.align_buttons[name] = b
             aw(b)
         self._popup_buttons = []
-        for icon, tip, make in (("linespacing", "Line spacing", self._make_spacing_popup),):
+        for icon, tip, make in (("linespacing", "Line spacing", self._make_spacing_popup),
+                                ("borders", "Insert table", self._make_table_popup)):
             b = PopupButton(icon, tip, make)
             self._popup_buttons.append(b)
             aw(b)
@@ -767,6 +774,31 @@ class MainWindow(FramelessMixin, QMainWindow):
         d.spaceBefore.connect(lambda: self._para_call("add_space_before"))
         d.options.connect(self._line_spacing_options)
         return d
+
+    def _make_table_popup(self):
+        d = TablePopup(self)
+        d.chosen.connect(lambda c, r: self._para_call("insert_table", c, max(r - 1, 0)))     # the header row is part of the picked size
+        d.custom.connect(self.insert_table_dialog)
+        return d
+
+    def insert_table_dialog(self):
+        ed = self.editor_of(self.current())
+        if ed is None or self.current().is_large or ed.isReadOnly():
+            self.flash("Large files are read-only: make an editable copy to insert a table.") if ed is not None else None
+            return
+        if not ed.format_supported():
+            self.flash("Tables can be inserted in text, Markdown and HTML documents.")
+            return
+        d = TableDialog(self, self.settings["table_style"] if "table_style" in self.settings else "markdown")
+        if d.exec() == QDialog.Accepted:
+            cols, rows, header, style, aligns = d.values()
+            self.settings["table_style"] = style
+            ed.insert_table(cols, rows, header, style, aligns)
+
+    def _reformat_table(self):
+        ed = self.editor_of(self.current())
+        if ed is None or self.current().is_large or not ed.reformat_table():
+            self.flash("Put the caret inside a table (Markdown, ASCII or box-drawing) to re-format it.")
 
     def _line_spacing_options(self):
         v, ok = QInputDialog.getDouble(self, "Line spacing options", "Line spacing (1.0 = single):", 1.15, 1.0, 6.0, 2)
@@ -819,7 +851,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         self._fmt_colors = {"hl": HIGHLIGHTS[0][1], "fc": TEXT_COLORS[0][1]}
         have = set(QFontDatabase.families())
         self.font_box = QComboBox()
-        self.font_box.setFixedWidth(104)
+        self.font_box.setFixedWidth(92)
         self.font_box.setToolTip("Font")
         self.font_box.addItem("Font", "")
         for f in FONTS:
@@ -830,7 +862,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         tb.addWidget(self.font_box)
         self.size_box = QComboBox()
         self.size_box.setEditable(True)
-        self.size_box.setFixedWidth(80)
+        self.size_box.setFixedWidth(72)
         self.size_box.setToolTip("Text size (pt)")
         self.size_box.addItems([str(n) for n in SIZES_PT])
         self.size_box.setCurrentText("11")
@@ -1029,19 +1061,20 @@ class MainWindow(FramelessMixin, QMainWindow):
         return {os.path.normcase(p.path) for p in self.all_tabs() if p.path and self._modified(p)}
 
     def _tab_badge(self, page):
-        """The MD badge for Markdown documents, a small document for the rest; only redrawn when the kind changes."""
+        """The tab's icon: MD badge or document, red with unsaved changes, green once saved. Only redrawn when it changes."""
         i = self.tabs.indexOf(page)
         is_md = (not page.is_large) and page.lang.name == "Markdown"
-        if i >= 0 and getattr(page, "_badge_md", None) != is_md:
-            page._badge_md = is_md
-            self.tabs.setTabIcon(i, badge_icon(is_md))
+        state = "dirty" if self._modified(page) else ("saved" if page.path else None)
+        if i >= 0 and getattr(page, "_badge_key", None) != (is_md, state):
+            page._badge_key = (is_md, state)
+            self.tabs.setTabIcon(i, badge_icon(is_md, state=state))
 
     def _decorate_tab(self, page):
         i = self.tabs.indexOf(page)
         if i < 0:
             return
         mod = self._modified(page)
-        page._badge_md = None
+        page._badge_key = None
         self._tab_badge(page)
         self.tabs.setTabText(i, self.tab_title(page))
         self.tabs.setTabToolTip(i, page.path or page.title)
@@ -1055,7 +1088,7 @@ class MainWindow(FramelessMixin, QMainWindow):
                                 f"padding: 1px 7px; font-size: 11px; font-weight: 600;")
             hl.addWidget(badge)
         bar = self.tabs.tabBar()
-        close = TabClose(bar, lambda p=page: (self._modified(p), self.tabs.currentWidget() is p, bar.hover == self.tabs.indexOf(p)))
+        close = TabClose(bar, lambda p=page: (self._modified(p), bool(p.path) and not self._modified(p), self.tabs.currentWidget() is p, bar.hover == self.tabs.indexOf(p)))
         close.clicked.connect(lambda _=False, p=page: self.close_tab(p))
         hl.addWidget(close)
         self.tabs.tabBar().setTabButton(i, QTabBar.RightSide, box)
@@ -1102,6 +1135,7 @@ class MainWindow(FramelessMixin, QMainWindow):
         ed.path_resolver = self._resolve_path_token
         ed.openPathRequested.connect(lambda p: self.open_paths([p]))
         ed.statusMessage.connect(self.flash)
+        ed.insertTableRequested.connect(self.insert_table_dialog)
         ed.search_url = self.settings["search_url"]
 
     def _resolve_path_token(self, token):
@@ -2944,18 +2978,6 @@ class MainWindow(FramelessMixin, QMainWindow):
         if on:
             self._sync_preview_scroll()
 
-    def toggle_panel_expand(self):
-        """The panel takes the whole work area; Esc (or the same button) returns to the split view."""
-        if not self._panel_expanded:
-            self._panel_width = self.map_dock.width()
-            self.tabs.hide()
-            self._panel_expanded = True
-        else:
-            self.tabs.show()
-            self.resizeDocks([self.map_dock], [self._panel_width], Qt.Horizontal)
-            self._panel_expanded = False
-        self.btn_expand.setToolTip("Back to the split view (Esc)" if self._panel_expanded else "Expand the panel to the whole work area (Esc to return)")
-
     def _sync_preview_scroll(self):
         """Lines the preview up with the editor: find the heading at or above the editor's first visible line and interpolate
         between it and the next heading, so matching sections stay side by side."""
@@ -3004,12 +3026,6 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.preview_full.view.restyle()
         self.preview_full.view.show_document(*src)
         self.preview_full.showFullScreen()
-
-    def keyPressEvent(self, e):
-        if e.key() == Qt.Key_Escape and self._panel_expanded:
-            self.toggle_panel_expand()
-            return
-        super().keyPressEvent(e)
 
     def toggle_workspace(self, on):
         self.settings["show_workspace"] = on
@@ -3199,10 +3215,10 @@ class MainWindow(FramelessMixin, QMainWindow):
         self.lbl_mode.setStyleSheet(f"color: {theme.c('ORANGE')}; font-weight: 600;" if over else "")
         if self._modified(page):
             self.lbl_save.setText("Unsaved")
-            self.lbl_save.setStyleSheet(f"color: {theme.c('ORANGE')};")
+            self.lbl_save.setStyleSheet(f"color: {theme.c('RED')};")
         else:
             self.lbl_save.setText("Saved" if page.path else "New file")
-            self.lbl_save.setStyleSheet(f"color: {theme.c('MUTED') if page.path else theme.c('FAINT')};")
+            self.lbl_save.setStyleSheet("color: #2e9e5b;" if page.path else f"color: {theme.c('FAINT')};")
         a = self.lang_actions.get(page.lang.name)
         if a:
             a.setChecked(True)

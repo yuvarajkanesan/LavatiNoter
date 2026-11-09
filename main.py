@@ -1696,6 +1696,77 @@ def selftest():
         assert ed.toPlainText().startswith("\nalpha beta"), repr(ed.toPlainText()[:12])
         ed.document().setModified(False)
 
+    def t_tables():
+        from lavatinoter import tablemodel as tm
+        from lavatinoter.highlighter import lang_by_name
+
+        def aligned(ed):
+            return len({tm.display_width(l) for l in ed.toPlainText().split("\n") if l.strip()}) == 1
+
+        def goto(ed, line, col):
+            c = ed.textCursor()
+            c.setPosition(ed.document().findBlockByNumber(line).position() + col)
+            ed.setTextCursor(c)
+        for style, body in (("markdown", 2), ("ascii", 3), ("unicode", 3)):
+            ed = win.editor_of(win.new_file("", "t.md", lang_by_name("Markdown")))
+            ed.lang_auto = False
+            ed.insert_table(3, 2, True, style, ["left", "center", "right"])
+            assert aligned(ed), style
+            goto(ed, body, 2)
+            ed.insertPlainText("a much longer cell \u4e2d\u6587 \U0001F600")             # wide characters and emoji
+            ed._auto_repad()                                                           # what the 100 ms timer does
+            assert aligned(ed), style
+            assert ed.table_tab() and ed.table_tab() and ed.table_tab() and ed.table_tab() and ed.table_tab() and ed.table_tab() and ed.table_tab()
+            assert sum(1 for l in ed.toPlainText().split("\n") if l.strip()) > (4 if style == "markdown" else 6), style    # Tab in the last cell: a new row
+            assert aligned(ed), style
+        # borders and separators cannot be damaged
+        ed = win.editor_of(win.new_file("", "b.md", lang_by_name("Markdown")))
+        ed.lang_auto = False
+        ed.insert_table(2, 1, True, "ascii", None)
+        before = ed.toPlainText()
+        goto(ed, 0, 3)
+        assert ed.table_guard(Qt.Key_Delete, "") and ed.table_guard(Qt.Key_Backspace, "") and ed.table_guard(0, "z")
+        goto(ed, 1, 2)
+        assert ed.table_guard(Qt.Key_Backspace, "")                                    # the start of a cell: its padding and border stay
+        assert ed.toPlainText() == before
+        # a paste with a line break and a pipe stays in its cell
+        ed = win.editor_of(win.new_file("", "p.md", lang_by_name("Markdown")))
+        ed.lang_auto = False
+        ed.insert_table(2, 1, True, "markdown", None)
+        goto(ed, 2, 2)
+        from PySide6.QtCore import QMimeData
+        md = QMimeData()
+        md.setText("one\ntwo | three")
+        ed.insertFromMimeData(md)
+        ed._auto_repad()
+        lines = [l for l in ed.toPlainText().split("\n") if l.strip()]
+        assert len(lines) == 3 and "two \\| three" in lines[2], lines
+        # one undo step each for insert and re-format, and the line endings are untouched
+        ed = win.editor_of(win.new_file("", "u.md", lang_by_name("Markdown")))
+        ed.lang_auto = False
+        ed.eol = "\r\n"
+        ed.insert_table(4, 3, True, "unicode", None)
+        full = ed.toPlainText()
+        assert "\r" not in full and ed.eol == "\r\n"
+        ed.undo()
+        assert ed.toPlainText() == ""
+        ed.redo()
+        assert ed.toPlainText() == full
+        ed = win.editor_of(win.new_file("|a|bbbb|\n|-|:-:|\n|ccccc|d|\n", "r.md", lang_by_name("Markdown")))
+        ed.lang_auto = False
+        goto(ed, 0, 1)
+        assert ed.reformat_table() and aligned(ed)
+        ed.undo()
+        assert ed.toPlainText().startswith("|a|bbbb|")                                 # the whole re-format is one step
+        # the context menu offers the table commands inside a table
+        ed.redo()
+        goto(ed, 0, 1)
+        ctx = ed._table_ctx()
+        assert ctx is not None and ctx["row"] is not None and ctx["model"].ncols == 2        # what the Table submenu keys on
+        assert ed.table_add_row() and ed.table_add_column() and ed.table_set_alignment("right") and ed.table_delete_column() and ed.table_delete_row()
+        assert aligned(ed)
+        ed.document().setModified(False)
+
     def t_theme():
         win.switch_theme("Light")
         pump(20)
@@ -1705,7 +1776,7 @@ def selftest():
                      ("editor find / replace / mark", t_editor_find_replace), ("emoji-safe positions", t_emoji_positions),
                      ("find dialog", t_find_dialog), ("find / replace in files", t_find_in_files),
                      ("encodings", t_encodings), ("picture paste", t_paste_image), ("large file mode", t_large),
-                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("Word-style mini toolbar", t_word_style_toolbar), ("Paragraph group (align, spacing, shading, lists, sort)", t_paragraph_group), ("Compare dialogs (merge setup, folders, large files, sessions)", t_compare_dialogs), ("selected picture hides its path", t_selected_picture_path), ("formatting marks survive text changes", t_marks_survive_transforms), ("toolbar popups (line spacing)", t_toolbar_popups), ("themes", t_theme)):
+                     ("session file", t_session), ("syntax highlighting", t_highlight), ("spell check and auto-correct", t_spell), ("bold / italic / underline / size", t_format), ("picture area is not editable", t_picture_zone), ("word autocomplete", t_autocomplete), ("code formatting, languages, brackets, auto-close", t_ide), ("code folding", t_folding), ("go to definition / references / symbols", t_navigation), ("plugins", t_plugins), ("editorconfig, hex view, themes", t_editorconfig_hex_themes), ("command palette and quick open", t_palette), ("multiple cursors and column select", t_multicursor), ("compare files and git status", t_diff_and_git), ("run file and macros", t_run_and_macro), ("print and export (PDF, HTML)", t_export), ("large file follow and filter", t_tail_and_filter), ("split view", t_split_view), ("update check and portable data folder", t_updates_portable), ("language server client", t_lsp), ("combined formatting and sizes", t_format_combos), ("Ctrl + wheel zoom", t_zoom), ("formatting whole lines and crossing marks", t_format_whole_lines), ("language detection from the text", t_detect_language), ("Save As types, extensions, maximized", t_save_types), ("Save As dialog adds the right extension", t_save_dialog), ("start-up safety: long lines, staggered restore", t_startup_safety), ("copy and paste without stray marks", t_clean_copy), ("pasted picture hides its path", t_picture_link_hidden), ("compare window editing", t_diff_editing), ("right-click menu features", t_context_menu_features), ("Word-style mini toolbar", t_word_style_toolbar), ("Paragraph group (align, spacing, shading, lists, sort)", t_paragraph_group), ("Compare dialogs (merge setup, folders, large files, sessions)", t_compare_dialogs), ("selected picture hides its path", t_selected_picture_path), ("formatting marks survive text changes", t_marks_survive_transforms), ("toolbar popups (line spacing)", t_toolbar_popups), ("text tables", t_tables), ("themes", t_theme)):
         check(name, fn)
     for p in win.all_tabs():
         if p.is_large:

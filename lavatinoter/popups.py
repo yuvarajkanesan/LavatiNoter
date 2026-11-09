@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, 
 from . import theme
 
 SPACINGS = (("Single", 1.0, "1.0"), ("Comfortable", 1.15, "1.15"), ("Relaxed", 1.5, "1.5"), ("Double", 2.0, "2.0"))
-TABLE_COLS, TABLE_ROWS = 8, 6
+TABLE_COLS, TABLE_ROWS = 10, 8
 
 
 def _font(px, weight=QFont.Medium):
@@ -127,6 +127,78 @@ class LineSpacingPopup(PopupCard):
             row = Row(text, indent=False)
             row.clicked.connect(lambda s=sig: (self.close(), s.emit()))
             self.body.addWidget(row)
+
+
+def _icon_table(p, r):
+    p.drawPixmap(r.toRect(), theme.icon("borders", theme.c("MUTED"), 22).pixmap(22, 22))
+
+
+class TableGrid(QWidget):
+    """Word's table picker: hover to pick columns x rows (rows include the header), click to insert."""
+    sizeChanged = Signal(int, int)
+    picked = Signal(int, int)
+    S = 20
+    GAP = 4
+
+    def __init__(self, cols=3, rows=2):
+        super().__init__()
+        self.cols, self.rows = cols, rows
+        self.setMouseTracking(True)
+        step = self.S + self.GAP
+        self.setFixedSize(TABLE_COLS * step - self.GAP + 4, TABLE_ROWS * step - self.GAP + 4)
+
+    def _cell(self, i, j):
+        step = self.S + self.GAP
+        return QRectF(2 + i * step, 2 + j * step, self.S, self.S)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        for j in range(TABLE_ROWS):
+            for i in range(TABLE_COLS):
+                on = i < self.cols and j < self.rows
+                p.setPen(QPen(QColor(theme.c("ACCENT") if on else theme.c("BORDER")), 1.3))
+                p.setBrush(QColor(theme.c("SELECTED") if on else theme.c("PANEL")))
+                p.drawRoundedRect(self._cell(i, j), 3, 3)
+
+    def _at(self, pos):
+        step = self.S + self.GAP
+        i, j = int((pos.x() - 2) // step), int((pos.y() - 2) // step)
+        if 0 <= i < TABLE_COLS and 0 <= j < TABLE_ROWS:
+            return i + 1, j + 1
+        return None
+
+    def mouseMoveEvent(self, e):
+        at = self._at(e.position().toPoint())
+        if at and at != (self.cols, self.rows):
+            self.cols, self.rows = at
+            self.sizeChanged.emit(*at)
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        at = self._at(e.position().toPoint())
+        if at:
+            self.picked.emit(*at)
+
+
+class TablePopup(PopupCard):
+    chosen = Signal(int, int)           # columns, rows (the header row counts)
+    custom = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent, 280)
+        self.size_label = QLabel("Insert Table")
+        self.size_label.setFont(_font(15, QFont.DemiBold))
+        self.size_label.setStyleSheet(f"color: {theme.c('TEXT')}; padding: 2px 2px 8px 2px;")
+        self.body.addWidget(self.size_label)
+        self.grid = TableGrid()
+        self.grid.sizeChanged.connect(lambda c, r: self.size_label.setText(f"Table {c} × {r}"))
+        self.grid.picked.connect(lambda c, r: (self.close(), self.chosen.emit(c, r)))
+        self.body.addWidget(self.grid)
+        self.separator()
+        row = Row("Insert Table...", icon=_icon_table)
+        row.clicked.connect(lambda: (self.close(), self.custom.emit()))
+        self.body.addWidget(row)
 
 
 class PopupButton(QToolButton):
