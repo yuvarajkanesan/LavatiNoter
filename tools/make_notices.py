@@ -23,6 +23,11 @@ same version. Source code and build instructions: https://code.qt.io and https:/
 
 Fonts: Manrope (c) The Manrope Project Authors, IBM Plex Sans (c) IBM Corp., and JetBrains Mono (c) The JetBrains Mono Project Authors, are licensed under
 the SIL Open Font License 1.1 (https://openfontlicense.org).
+
+Mermaid 10.9.3 (assets/mermaid.min.js, used to draw diagrams in the browser) is MIT licensed.
+Copyright (c) 2014 - 2022 Knut Sveidqvist. Permission is granted, free of charge, to use, copy, modify, merge, publish,
+distribute, sublicense and/or sell copies of the software, subject to this notice being included in all copies or
+substantial portions of it. The software is provided "as is", without warranty of any kind. Full text: https://github.com/mermaid-js/mermaid/blob/develop/LICENSE
 """
 
 

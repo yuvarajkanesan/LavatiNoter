@@ -17,7 +17,9 @@ def run(args, cwd, timeout=6):
         return None
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     try:
-        r = subprocess.run([exe, "-c", "core.quotepath=false"] + list(args), cwd=cwd, capture_output=True, timeout=timeout, creationflags=flags)
+        r = subprocess.run([exe, "-c", "core.quotepath=false", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=", "-c", "protocol.ext.allow=never"]       # a cloned repo's own config must not run programs
+                           + list(args), cwd=cwd, capture_output=True, timeout=timeout, creationflags=flags,
+                           env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"})
     except (OSError, subprocess.SubprocessError):
         return None
     return r.stdout if r.returncode == 0 else None

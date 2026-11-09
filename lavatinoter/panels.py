@@ -33,6 +33,8 @@ def heading(text):
     lab.setContentsMargins(16, 12, 12, 8)
     return lab
 
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tif", ".tiff")
+
 
 class _Icons(QFileIconProvider):
     def icon(self, arg):
@@ -481,7 +483,8 @@ class ImagesPanel(QWidget):
         path = it.data(Qt.UserRole)
         m = QMenu(self)
         m.addAction("Preview", lambda: self._preview(it))
-        m.addAction("Open with default app", lambda: os.startfile(path) if sys.platform == "win32" else None)
+        if os.path.splitext(path)[1].lower() in IMAGE_EXTS:                    # never launch whatever file a document points at
+            m.addAction("Open with default app", lambda: os.startfile(path) if sys.platform == "win32" else None)
         m.addAction("Show in Explorer", lambda: reveal_in_explorer(path))
         m.addAction("Copy path", lambda: QGuiApplication.clipboard().setText(os.path.normpath(path)))
         m.exec(self.list.viewport().mapToGlobal(pos))
@@ -724,8 +727,9 @@ class MarkdownPreview(QTextBrowser):
     def _link(self, url):
         if url.scheme() == "diagram":
             self.open_diagrams()
-        else:
+        elif url.scheme() in ("http", "https", "mailto"):
             QDesktopServices.openUrl(url)
+        # anything else (file:, ms-msdt:, custom handlers, relative paths) is ignored: a link in a document must never start a program
 
     def open_diagrams(self):
         """Draws every Mermaid diagram of the document in the default browser, using the bundled mermaid.js (works offline)."""
@@ -733,11 +737,12 @@ class MarkdownPreview(QTextBrowser):
             return
         js = QUrl.fromLocalFile(util.resource("assets", "mermaid.min.js")).toString()
         blocks = "\n".join(f'<h3>Diagram {i}</h3><pre class="mermaid">{_html.escape(d)}</pre>' for i, d in enumerate(self.diagrams, 1))
-        page = (f'<!doctype html><meta charset="utf-8"><title>Diagrams</title><style>body{{font-family:Segoe UI,sans-serif;margin:32px;color:#1e1b33}}'
+        page = (f'<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src &apos;none&apos;; script-src file: &apos;unsafe-inline&apos;; style-src &apos;unsafe-inline&apos;; img-src data:">'
+                f'<title>Diagrams</title><style>body{{font-family:Segoe UI,sans-serif;margin:32px;color:#1e1b33}}'
                 f'pre.mermaid{{background:#fff}}</style>{blocks}<script src="{js}"></script>'
-                f'<script>mermaid.initialize({{startOnLoad:true}});</script>')
-        path = os.path.join(tempfile.gettempdir(), "lavatinoter-diagrams.html")
-        with open(path, "w", encoding="utf-8") as f:
+                f'<script>mermaid.initialize({{startOnLoad:true,securityLevel:"strict"}});</script>')
+        fd, path = tempfile.mkstemp(prefix="lavatinoter-diagrams-", suffix=".html")      # a fresh private file, not a guessable name
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(page)
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
