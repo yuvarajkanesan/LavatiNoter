@@ -3358,11 +3358,16 @@ class CodeEditor(QPlainTextEdit):
         f.setPixelSize(max(11, int(f.pointSizeF() * 1.25) if f.pointSizeF() > 0 else 13))
         p.setFont(f)
         fm = QFontMetrics(f)
-        y += r.height() + 18
+        label_w = 190
+        block_w = label_w + max(fm.horizontalAdvance(k) for _l, k in self.HINTS) + 14
+        block_h = len(self.HINTS) * (fm.height() + 14) - 14
+        vp = self.viewport()
+        x = max((vp.width() - block_w) // 2, r.left() + 4)                  # the shortcuts sit in the middle of the page
+        y = max((vp.height() - block_h) // 2, r.bottom() + 18)
         for label, keys in self.HINTS:
             p.setPen(faint)
             p.drawText(x, y + fm.ascent(), label)
-            kx = x + 190
+            kx = x + label_w
             w = fm.horizontalAdvance(keys) + 14
             box = QRectF(kx, y - 1, w, fm.height() + 4)
             p.setPen(QPen(QColor(theme.c("BORDER")), 1))
